@@ -125,8 +125,10 @@ async fn main(_spawner: Spawner) {
 
     let p = embassy_rp::init(Default::default());
 
-    let mut r503 = r503::r503::R503::new(p.PIO0, p.DMA_CH0, p.PIN_26, p.PIN_27, p.PIN_22);
+    // Initialize the fingerprint scanner.
+    let mut r503 = r503::R503::new(p.PIO0, p.DMA_CH0, p.PIN_26, p.PIN_27, p.PIN_22);
 
+    // Initialize the multi-colour LED.
     let Pio { mut common, sm0, .. } = Pio::new(p.PIO1, Irqs);
     let mut ws2812 = Ws2812::new(&mut common, sm0, p.DMA_CH1, p.PIN_15);
 
@@ -139,6 +141,13 @@ async fn main(_spawner: Spawner) {
 	ws2812.write(&[(0,0,255).into()]).await;
 	Timer::after_secs(1).await;
 
-	r503.VfyPwd(0x00000000);
+	match r503.VfyPwd(0x00000000).await {
+	    r503::Status::CmdExecComplete => {
+		info!("VfyPwd returned CmdExecComplete");
+	    },
+	    stat => {
+		info!("VfyPwd returned UNKNOWN ({:?})", stat as u8);
+	    }
+	}
     }
 }
