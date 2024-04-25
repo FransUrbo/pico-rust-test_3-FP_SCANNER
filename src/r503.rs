@@ -1,12 +1,18 @@
-#![allow(non_snake_case)]
-#![allow(unused)]
+#![allow(non_snake_case)]	// I want to keep with the manufacturers naming scheme.
+#![allow(unused)]		// Not finished yet, so EVERYTHING is unused!! :D
 
-use defmt::*;
+use defmt::info;
 
 use embassy_rp::dma::{AnyChannel, Channel};
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::{Direction, InterruptHandler, Pio, PioPin, StateMachine};
 use embassy_rp::{bind_interrupts, into_ref, Peripheral, PeripheralRef};
+
+bind_interrupts!(pub struct Irqs {
+    PIO0_IRQ_0 => InterruptHandler<PIO0>;
+});
+
+// =====
 
 pub enum Status {
     CmdExecComplete			= 0x00,
@@ -34,12 +40,6 @@ pub enum Status {
     ErrorWrongNotepadNumber		= 0x1c,
     ErrorFailedOperateCommunicationPort	= 0x1d
 }
-
-// =====
-
-bind_interrupts!(pub struct Irqs {
-    PIO0_IRQ_0 => InterruptHandler<PIO0>;
-});
 
 pub struct R503<'l> {
     dma: PeripheralRef<'l, AnyChannel>,

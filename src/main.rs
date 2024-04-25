@@ -1,7 +1,9 @@
 #![no_std]
 #![no_main]
 
-use defmt::*;
+// !! Fingerprint scanner is on PIO0, and the NeoPixel is on PIO1 !!
+
+use defmt::info;
 
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::PIO1;
@@ -12,6 +14,7 @@ use embassy_time::{Timer};
 use {defmt_rtt as _, panic_probe as _};
 
 pub mod r503;
+use crate::r503::R503;
 pub mod ws2812;
 use crate::ws2812::Ws2812;
 
@@ -28,7 +31,7 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Initialize the fingerprint scanner.
-    let mut r503 = r503::R503::new(p.PIO0, p.DMA_CH0, p.PIN_26, p.PIN_27, p.PIN_22);
+    let mut r503 = R503::new(p.PIO0, p.DMA_CH0, p.PIN_26, p.PIN_27, p.PIN_22);
 
     // Initialize the multi-colour LED.
     let Pio { mut common, sm0, .. } = Pio::new(p.PIO1, Irqs);
