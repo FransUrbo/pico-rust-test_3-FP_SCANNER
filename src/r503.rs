@@ -4,8 +4,12 @@
 use defmt::info;
 
 use embassy_rp::dma::{AnyChannel, Channel};
+use embassy_rp::gpio::Level;
+use embassy_rp::pio::{
+    Config, Direction, FifoJoin, InterruptHandler, Pio, PioPin,
+    ShiftConfig, ShiftDirection, StateMachine
+};
 use embassy_rp::peripherals::PIO0;
-use embassy_rp::pio::{Direction, InterruptHandler, Pio, PioPin, StateMachine};
 use embassy_rp::{bind_interrupts, into_ref, Peripheral, PeripheralRef};
 
 bind_interrupts!(pub struct Irqs {
@@ -50,11 +54,11 @@ pub struct R503<'l> {
 
 impl<'l> R503<'l> {
     pub fn new(
-	pio: impl Peripheral<P = PIO0> + 'l,
-	dma: impl Peripheral<P = impl Channel> + 'l,
-	pin_send: impl PioPin,
-	pin_receive: impl PioPin,
-	pin_wakeup: impl PioPin
+	pio:		impl Peripheral<P = PIO0> + 'l,
+	dma:		impl Peripheral<P = impl Channel> + 'l,
+	pin_send:	impl PioPin,
+	pin_receive:	impl PioPin,
+	pin_wakeup:	impl PioPin
     ) -> Self {
 	into_ref!(dma);
 
@@ -67,9 +71,23 @@ impl<'l> R503<'l> {
 	let tx = common.make_pio_pin(pin_send);
 	let rx = common.make_pio_pin(pin_receive);
 	let wu = common.make_pio_pin(pin_wakeup);
+	let mut cfg = Config::default();
 
+	// FIFO setup.
+	cfg.fifo_join = FifoJoin::TxOnly;
+	cfg.shift_out = ShiftConfig {
+	    auto_fill: true,
+	    threshold: 24,
+	    direction: ShiftDirection::Left,
+	};
+
+	// Pin setup.
 	sm0.set_pin_dirs(Direction::Out, &[&tx]);
-	sm0.set_pin_dirs(Direction::In, &[&rx, &wu]); // TODO: Is WakeUp an INPUT or OUTPUT??
+	sm0.set_pin_dirs(Direction::In,  &[&rx, &wu]);	// TODO: Is WakeUp an INPUT or OUTPUT??
+	sm0.set_pins(Level::Low, &[&tx, &rx, &wu]);
+
+	sm0.set_config(&cfg);
+	sm0.set_enable(true);
 
 	Self {
 	    dma:    dma.map_into(),
@@ -85,9 +103,9 @@ impl<'l> R503<'l> {
     // ==========================================================================================================
     // Start	2 bytes		Fixed value of 0xEF01; High byte transferred first.
     // ADDER	4 bytes		Default value is 0xFFFFFFFF, which can be modified by command.
-    //                              High byte transferred first and at wrong adder value, module
-    //                              will reject to transfer.
-    // PID		1 byte		01H	Command packet;
+    //				High byte transferred first and at wrong adder value, module
+    //				will reject to transfer.
+    // PID	1 byte		01H	Command packet;
     //				02H	Data packet; Data packet shall not appear alone in executing
     //					processs, must follow command packet or acknowledge packet.
     //				07H	Acknowledge packet;
@@ -95,9 +113,9 @@ impl<'l> R503<'l> {
     // LENGTH	2 bytes		Refers to the length of package content (command packets and data packets)
     //				plus the length of Checksum (2 bytes). Unit is byte. Max length is 256 bytes.
     //				And high byte is transferred first.
-    // DATA		-		It can be commands, data, command’s parameters, acknowledge result, etc.
+    // DATA	-		It can be commands, data, command’s parameters, acknowledge result, etc.
     //				(fingerprint character value, template are all deemed as data);
-    // SUM		2 bytes		The arithmetic sum of package identifier, package length and all package
+    // SUM	2 bytes		The arithmetic sum of package identifier, package length and all package
     //				contens. Overflowing bits are omitted. high byte is transferred first.
 
     fn write_cmd_bytes(&mut self, bytes: &[u8]) {
