@@ -45,6 +45,45 @@ pub enum Status {
     ErrorFailedOperateCommunicationPort	= 0x1d
 }
 
+// These are in Hex order. Further down, they're defined in the order they
+// came in the documentation.
+pub enum Commands {
+    GenImg		= 0x01,
+    Img2Tz		= 0x02,
+    Match		= 0x03,
+    Search		= 0x04,
+    RegModel		= 0x05,
+    Store		= 0x06,
+    LoadChar		= 0x07,
+    UpChar		= 0x08,
+    DownChar		= 0x09,
+    UpImage		= 0x0a,
+    DownImage		= 0x0b,
+    DeletChar		= 0x0c,
+    Empty		= 0x0d,
+    SetSysPara		= 0x0e,
+    ReadSysPara		= 0x0f,
+    SetPwd		= 0x12,
+    VfyPwd		= 0x13,
+    SetAdder		= 0x15,
+    ReadInfPage		= 0x16,
+    Control		= 0x17,
+    ReadNotepad		= 0x19,
+    TempleteNum		= 0x1d,
+    GetImageEx		= 0x28,
+    Cancel		= 0x30,
+    CheckSensor		= 0x36,
+    GetAlgVer		= 0x39,
+    GetFwVer		= 0x3a,
+    SoftRst		= 0x3d,
+    HandShake		= 0x40,
+    GetRandomCode	= 0x14,
+    WriteNotepad	= 0x18,
+    ReadIndexTable	= 0x1f,
+    AuraLedConfig	= 0x35,
+    ReadProdInfo	= 0x3c
+}
+
 pub struct R503<'l> {
     dma: PeripheralRef<'l, AnyChannel>,
     sm: StateMachine<'l, PIO0, 0>,
@@ -225,7 +264,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code (1 byte) + basic parameter(16bytes)
     //   Confirmation code=00H: read complete;
     //   Confirmation code=01H: error when receiving package;
-    // Instuction code: 0fH
+    // Instruction code: 0fH
     pub async fn ReadSysPara(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -235,7 +274,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code (1 byte) +template number:N
     //   Confirmation code=0x00: read success;
     //   Confirmation code=0x01: error when receiving package;
-    // Instuction code: 1dH
+    // Instruction code: 1dH
     pub async fn TempleteNum(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -251,7 +290,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code + Fingerprint template index table
     //   Confirmation code=0x00: read complete;
     //   Confirmation code=0x01: error when receiving package;
-    // Instuction code: 0x1F
+    // Instruction code: 1fH
     pub async fn ReadIndexTable(&mut self, page: u8) -> Status {
 	return Status::CmdExecComplete
     }
@@ -267,7 +306,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=02H: can’t detect finger;
     //   Confirmation code=03H: fail to collect finger;
-    // Instuction code: 01H
+    // Instruction code: 01H
     pub async fn GenImg(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -278,7 +317,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: ready to transfer the following data packet;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0fH: fail to transfer the following data packet;
-    // Instuction code: 0aH
+    // Instruction code: 0aH
     pub async fn UpImage(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -289,7 +328,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: ready to transfer the following data packet;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0eH: fail to transfer the following data packet;
-    // Instuction code: 0bH
+    // Instruction code: 0bH
     pub async fn DownImage(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -306,7 +345,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=07H: fail to generate character file due to lackness of character point or
     //                          over-smallness of fingerprint image;
     //   Confirmation code=15H: fail to generate the image for the lackness of valid primary image;
-    // Instuction code: 02H
+    // Instruction code: 02H
     pub async fn Img2Tz(&mut self, buff: u8) -> Status {
 	return Status::CmdExecComplete
     }
@@ -319,7 +358,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0aH: fail to combine the character files. That’s, the character files don’t belong
     //                          to one finger.
-    // Instuction code: 05H
+    // Instruction code: 05H
     pub async fn RegModel(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -332,7 +371,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: ready to transfer the following data packet;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0dH: error when uploading template;
-    // Instuction code: 08H
+    // Instruction code: 08H
     pub async fn UpChar(&mut self, buff: u8) -> Status {
 	return Status::CmdExecComplete
     }
@@ -343,7 +382,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: ready to transfer the following data packet;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0eH: can not receive the following data packet;
-    // Instuction code: 09H
+    // Instruction code: 09H
     pub async fn DownChar(&mut self, buff: u8) -> Status {
 	return Status::CmdExecComplete
     }
@@ -360,7 +399,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0bH: addressing PageID is beyond the finger library;
     //   Confirmation code=18H: error when writing Flash;
-    // Instuction code: 06H
+    // Instruction code: 06H
     pub async fn Store(&mut self, buff: u8, page: u16) -> Status {
 	return Status::CmdExecComplete
     }
@@ -375,7 +414,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0cH: error when reading template from library or the readout template is invalid;
     //   Confirmation code=0BH: addressing PageID is beyond the finger library;
-    // Instuction code: 07H
+    // Instruction code: 07H
     pub async fn LoadChar(&mut self, buff: u8, page: u16) -> Status {
 	return Status::CmdExecComplete
     }
@@ -389,7 +428,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: delete success;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=10H: faile to delete templates;
-    // Instuction code: 0cH
+    // Instruction code: 0cH
     pub async fn DeletChar(&mut self, page: u16, n: u16) -> Status {
 	return Status::CmdExecComplete
     }
@@ -400,7 +439,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: empty success;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=11H: fail to clear finger library;
-    // Instuction code: 0dH
+    // Instruction code: 0dH
     pub async fn Empty(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -412,7 +451,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: templates of the two buffers are matching;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=08H: templates of the two buffers aren’t matching;
-    // Instuction code: 03H
+    // Instruction code: 03H
     pub async fn Match(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -427,7 +466,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: found the matching finer;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=09H: No matching in the library (both the PageID and matching score are 0);
-    // Instuction code: 04H
+    // Instruction code: 04H
     pub async fn Search(&mut self, buff: u8, start: u16, page: u16) -> Status {
 	return Status::CmdExecComplete
     }
@@ -449,7 +488,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=0x02: no fingers on the sensor;
     //   Confirmation code=0x03: unsuccessful entry;
     //   Confirmation code=0x07: poor image quality;
-    // Instuction code: 0x28
+    // Instruction code: 28H
     pub async fn GetImageEx(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -459,7 +498,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code
     //   Confirmation code=0x00: cancel setting successful;
     //   Confirmation code=other: cancel setting failed;
-    // Instuction code: 0x30
+    // Instruction code: 30H
     pub async fn Cancel(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -472,7 +511,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code
     //   Confirmation code=0x00: the device is normal and can receive instructions;
     //   Confirmation code=other: the device is abnormal;
-    // Instuction code: 0x40
+    // Instruction code: 40H
     pub async fn HandShake(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -482,7 +521,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code
     //   Confirmation code=0x00: the sensor is normal;
     //   Confirmation code=0x29: the sensor is abnormal;
-    // Instuction code: 0x36
+    // Instruction code: 36H
     pub async fn CheckSensor(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -492,7 +531,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code (1 byte) + AlgVer (algorithm library version string)
     //   Confirmation code=0x00: success;
     //   Confirmation code=0x01: error when receiving package;
-    // Instuction code: 0x39
+    // Instruction code: 39H
     pub async fn GetAlgVer(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -502,7 +541,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code + FwVer (Firmware version string)
     //   Confirmation code=0x00: success;
     //   Confirmation code=0x01: error when receiving package;
-    // Instuction code: 0x3A
+    // Instruction code: 3aH
     pub async fn GetFwVer(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -512,7 +551,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code + ProdInfo (product information)
     //   Confirmation code=0x00: success;
     //   Confirmation code=0x01: error when receiving package;
-    // Instuction code: 0x3C
+    // Instruction code: 3cH
     pub async fn ReadProdInfo(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -523,7 +562,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=0x00: success;
     //   Confirmation code=other: device is abnormal
-    // Instuction code: 0x3D
+    // Instruction code: 3dH
     pub async fn SoftRst(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -548,7 +587,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=0x00: success;
     //   Confirmation code=0x01: error when receiving package;
-    // Instuction code: 0x35
+    // Instruction code: 35H
     pub async fn AuraLedConfig(&mut self, ctrl: u8, speed: u8, colour: u8, times: i8) -> Status {
 	return Status::CmdExecComplete
     }
@@ -559,7 +598,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: generation success;
     //   Confirmation code=01H: error when receiving package;
-    // Instuction code: 14H
+    // Instruction code: 14H
     pub async fn GetRandomCode(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -570,7 +609,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: ready to transfer the following data packet;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0fH: can not transfer the following data packet;
-    // Instuction code: 16H
+    // Instruction code: 16H
     pub async fn ReadInfPage(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -580,7 +619,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: write success;
     //   Confirmation code=01H: error when receiving package;
-    // Instuction code: 18H
+    // Instruction code: 18H
     pub async fn WriteNotepad(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
@@ -590,7 +629,7 @@ impl<'l> R503<'l> {
     // Return Parameter: Confirmation code (1 byte) + data content
     //   Confirmation code=00H: read success;
     //   Confirmation code=01H: error when receiving package;
-    // Instuction code: 19H
+    // Instruction code: 19H
     pub async fn ReadNotepad(&mut self) -> Status {
 	return Status::CmdExecComplete
     }
