@@ -18,6 +18,10 @@ bind_interrupts!(pub struct Irqs {
 
 // =====
 
+const ADDRESS: [i32; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
+
+#[derive(Copy, Clone)]
+#[repr(u8)]
 pub enum Status {
     CmdExecComplete			= 0x00,
     ErrorReceivePackage			= 0x01,
@@ -47,6 +51,8 @@ pub enum Status {
 
 // These are in Hex order. Further down, they're defined in the order they
 // came in the documentation.
+#[derive(Copy, Clone)]
+#[repr(u8)]
 pub enum Commands {
     GenImg		= 0x01,
     Img2Tz		= 0x02,
@@ -83,6 +89,18 @@ pub enum Commands {
     AuraLedConfig	= 0x35,
     ReadProdInfo	= 0x3c
 }
+
+#[derive(Copy, Clone)]
+#[repr(u16)]
+pub enum Packets {
+    StartCode		= 0xEF01,	// High byte transferred first.
+    CommandPacket	= 0x01,
+    DataPacket		= 0x02,
+    AckPacket		= 0x07,
+    EndDataPacket	= 0x08
+}
+
+// =====
 
 pub struct R503<'l> {
     dma: PeripheralRef<'l, AnyChannel>,
@@ -161,10 +179,11 @@ impl<'l> R503<'l> {
 	info!("Writing command bytes: {:?}", bytes);
     }
 
-    fn write_header(&mut self, address: u32) {
-	info!("Writing header to address {:?}", address);
-	self.write_cmd_bytes(&[0xEF, 0x01]);
-	self.write_cmd_bytes(&address.to_be_bytes()[..]);
+    fn write_header(&mut self) {
+	// ERROR: `note: the trait `BitAnd` must be implemented`.
+	//let package = [Packets::StartCode >> 8, Packets::StartCode & 0xFF];
+	//self.write_cmd_bytes(&package);
+	//self.write_cmd_bytes(&address.to_be_bytes()[..]);
     }
 
     fn send_command(&mut self, command: u32) -> Status {
