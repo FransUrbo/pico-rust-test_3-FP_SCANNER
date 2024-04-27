@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]	// I want to keep with the manufacturers naming scheme.
 #![allow(unused)]		// Not finished yet, so EVERYTHING is unused!! :D
 
-use defmt::info;
+use defmt::{debug, info};
 
 use embassy_rp::dma::{AnyChannel, Channel};
 use embassy_rp::gpio::Level;
@@ -11,6 +11,8 @@ use embassy_rp::pio::{
 };
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::{bind_interrupts, into_ref, Peripheral, PeripheralRef};
+
+use chksum8;
 
 bind_interrupts!(pub struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -197,69 +199,52 @@ impl<'l> R503<'l> {
     // This is where the "magic" happens! NO IDEA HOW TO WRITE OR READ TO/FROM THAT THING!!
 
     fn write(&mut self, package: &[u32]) -> Status {
-	info!("Writing package");
+	debug!("Writing package");
+
+	// The Python lib uses `self._uart.write(bytearray(packet))` to do the actual write!
 
 	return Status::CmdExecComplete;
+	//return Status::ErrorReceivePackage;
+	//return Status::ErrorPassword;
+	//return Status::ErrorCombineCharFiles;
     }
 
     fn read(&mut self) -> Status {
-	info!("Reading reply");
+	debug!("Reading reply");
 
+	// The Python lib uses `self._uart.read(expected)` to do the actual read!
 	return Status::CmdExecComplete;
     }
 
     // -----
 
     fn send_command(&mut self, command: Command, data: u32) -> Status {
-	info!("Sending command {:?}", command as u32);
+	debug!("Sending command {=u32:#04x}", command as u32);
 
-	// 1) Send header.
-	// ERROR: `note: the trait `BitAnd` must be implemented`.
-	//let package = [Packets::StartCode >> 8, Packets::StartCode & 0xFF];
-	//self.write(&package);
-	//self.write(&address.to_be_bytes()[..]);
-
-	// 2) Send address.
-	//self.write(&ADDRESS);
-
-	// 3) Send package identifier (PID) for command.
-	//self.write(&Packets::CommandPacket);
-
-	// 4) Send package length (LENGTH).
-	//self.write(&...);
-
-	// 5) Send package content (DATA).
-	//let chksum = self.compute_checksum();
-	//let len = self.compute_length();
-	//self.write(&(len + chksum));
-
-	// 6) Send checksum (SUM).
-	//self.write(&chksum);
-
-	return Status::CmdExecComplete;
-    }
-
-    fn compute_checksum(&self) -> u16 {
-	info!("Computing checksum");
-
-	let mut checksum = 0u16;
-	let check_end = self.buffer.len();
-	let checked_bytes = &self.buffer[6..check_end];
-	for byte in checked_bytes {
-	    checksum += (*byte) as u16;
+	// Setup package.
+	let mut package: [u32; 6] = [0; 6];
+	package[0] = 0xEF01;		// Start (u16)
+	package[1] = 0xFFFFFFFF;	// Address (u32)
+	package[2] = command as u32;	// PID
+	if(data != 0) {
+	    package[4] = data as u32;
 	}
+	package[3] = package.len() as u32;
+	package[5] = chksum8::sum(&package) as u32;
+	debug!("Package: {:?}", package);
 
-	return checksum;
+	// Send package.
+	return self.write(&package);
     }
 
     fn compute_length(&self) -> u16 {
-	info!("Computing package length");
+	debug!("Computing package length");
 
 	return 0;
     }
 
     fn parse_reply(&self) -> Status {
-	info!("Parsing reply");
+	debug!("Parsing reply");
 
 	return Status::CmdExecComplete;
     }
@@ -290,8 +275,16 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn VfyPwd(&mut self, pass: u32) -> Status {
-	info!("Checking password: '{:?}'", pass);
-	return self.send_command(Command::VfyPwd, pass);
+	debug!("Checking password: '{:?}'", pass);
+
+	let ret = self.send_command(Command::VfyPwd, pass);
+	if(ret as u8 == 0) {
+	    return ret;
+	} else if(ret as u8 == 1) {
+	    return Status::ErrorReceivePackage;
+	} else {
+	    return Status::ErrorPassword;
+	}
     }
 
     // Description: Set Module’s handshaking password.
@@ -488,7 +481,7 @@ impl<'l> R503<'l> {
     //     Index Page		32 bytes			(see documentation)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn ReadIndexTable(&mut self, page: u8) -> Status {
-	return self.send_command(Command::ReadIndexTable, 0 as u32);
+	return self.send_command(Command::ReadIndexTable, page as u32);
     }
 
     // ===== Fingerprint-processing instructions
@@ -718,6 +711,7 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn Store(&mut self, buff: u8, page: u16) -> Status {
+	// TODO: Merge `buff` and `page`.
 	return self.send_command(Command::Store, buff as u32);
     }
 
@@ -750,6 +744,7 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn LoadChar(&mut self, buff: u8, page: u16) -> Status {
+	// TODO: Merge `buff` and `page`.
 	return self.send_command(Command::LoadChar, buff as u32);
     }
 
@@ -780,7 +775,8 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x03
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    pub async fn DeletChar(&mut self, page: u16, n: u16) -> Status {
+    pub async fn DeletChar(&mut self, page: u8, n: u8) -> Status {
+	// TODO: Merge `buff` and `page`.
 	return self.send_command(Command::DeletChar, page as u32);
     }
 
@@ -870,6 +866,7 @@ impl<'l> R503<'l> {
     //     MatchScore		 2 bytes
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn Search(&mut self, buff: u8, start: u16, page: u16) -> Status {
+	// TODO: Merge `buff`, `start` and `page`.
 	return self.send_command(Command::Search, buff as u32);
     }
 
@@ -1128,6 +1125,7 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn AuraLedConfig(&mut self, ctrl: u8, speed: u8, colour: u8, times: i8) -> Status {
+	// TODO: Merge `ctrl`, `speed`, `colour` and `times`.
 	return self.send_command(Command::AuraLedConfig, ctrl as u32);
     }
 

@@ -23,5 +23,14 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 pio = "0.2.1"
 smart-leds = "0.3.0"
 
-[profile.release]
+[dependencies.chksum8]
+git = "https://github.com/GabrielMajeri/chksum8.git"
+rev = "943ed1abf8f88cb58aedcdac3a833c32521ba225"
+
+[profile.dev]
 debug = 2
+opt-level = 0
+
+[profile.release]
+debug = 0
+opt-level = 3

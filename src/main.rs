@@ -3,7 +3,7 @@
 
 // !! Fingerprint scanner is on PIO0, and the NeoPixel is on PIO1 !!
 
-use defmt::info;
+use defmt::{debug, info};
 
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::PIO1;
@@ -38,20 +38,26 @@ async fn main(_spawner: Spawner) {
     let mut ws2812 = Ws2812::new(&mut common, sm0, p.DMA_CH1, p.PIN_15);
 
     loop {
-	info!("NeoPixel off");
+	debug!("NeoPixel off");
 	ws2812.write(&[(0,0,0).into()]).await;
 	Timer::after_secs(1).await;
 
-	info!("NeoPixel Blue");
+	debug!("NeoPixel Blue");
 	ws2812.write(&[(0,0,255).into()]).await;
 	Timer::after_secs(1).await;
 
 	match r503.VfyPwd(0x00000000).await {
 	    r503::Status::CmdExecComplete => {
-		info!("VfyPwd returned CmdExecComplete");
+		info!("Fingerprint scanner password correct");
+	    },
+	    r503::Status::ErrorReceivePackage => {
+		info!("ERROR: Fingerprint scanner password check - package receive");
+	    },
+	    r503::Status::ErrorPassword => {
+		info!("ERROR: Fingerprint scanner password check - wrong password");
 	    },
 	    stat => {
-		info!("VfyPwd returned UNKNOWN ({:?})", stat as u8);
+		info!("ERROR: code='{=u8:#04x}'", stat as u8);
 	    }
 	}
     }
