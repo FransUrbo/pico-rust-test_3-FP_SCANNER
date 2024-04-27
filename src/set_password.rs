@@ -34,22 +34,25 @@ async fn main(_spawner: Spawner) {
     // Initialize the multi-colour LED.
     let Pio { mut common, sm0, .. } = Pio::new(p.PIO1, Irqs);
     let mut ws2812 = Ws2812::new(&mut common, sm0, p.DMA_CH1, p.PIN_15);
+    let mut data = (0,0,255).into(); // BLUE
 
     loop {
-	debug!("NeoPixel off");
+	debug!("NeoPixel OFF");
 	ws2812.write(&[(0,0,0).into()]).await;
 	Timer::after_secs(1).await;
 
-	debug!("NeoPixel Blue");
-	ws2812.write(&[(0,0,255).into()]).await;
+	debug!("NeoPixel ON");
+	ws2812.write(&[data]).await;
 	Timer::after_secs(1).await;
 
 	match r503.SetPwd(0x00100000).await {
 	    Status::CmdExecComplete => {
 		info!("Fingerprint scanner password set");
+		data = (255,0,0).into(); // GREEN
 	    },
 	    Status::ErrorReceivePackage => {
 		info!("ERROR: Fingerprint scanner password set - package receive");
+		data = (0,255,0).into(); // RED
 	    },
 	    stat => {
 		info!("ERROR: code='{=u8:#04x}'", stat as u8);
