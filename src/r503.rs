@@ -127,10 +127,9 @@ pub enum AuroraLEDColour {
 // =====
 
 pub struct R503<'l> {
-    dma: PeripheralRef<'l, AnyChannel>,
-    sm: StateMachine<'l, PIO0, 0>,
-
-    buffer: Vec<u8, 128>
+    dma:	PeripheralRef<'l, AnyChannel>,
+    sm:		StateMachine<'l, PIO0, 0>,
+    buffer:	Vec<u8, 128>
 }
 
 // NOTE: Pins must be consecutive, otherwise it'll segfault!
@@ -173,7 +172,7 @@ impl<'l> R503<'l> {
 	// FIFO setup.
 	cfg.fifo_join = FifoJoin::TxOnly;
 	cfg.shift_out = ShiftConfig {
-	    auto_fill: true,
+	    auto_fill: false,
 	    threshold: 24,
 	    direction: ShiftDirection::Left,
 	};
@@ -188,7 +187,6 @@ impl<'l> R503<'l> {
 	cfg.set_set_pins(&[&tx, &rx, &wu]);
 
 	cfg.clock_divider = (U56F8!(125_000_000) / 20 / 200).to_fixed();
-	cfg.shift_out.auto_fill = true;
 
 	sm0.set_config(&cfg);
 	sm0.set_enable(true);
@@ -225,14 +223,12 @@ impl<'l> R503<'l> {
     // This is where the "magic" happens! NO IDEA HOW TO WRITE OR READ TO/FROM THAT THING!!
 
     fn write(&mut self) -> Status {
-//	debug!("Writing package: {:?}", self.buffer);
+	debug!("Writing package: {:?}", self.debug_vec());
 
-	//self.sm.tx().wait_push(data);
-
+	for byte in &self.buffer {
+	    self.sm.tx().wait_push(*byte as u32);
+	}
 	return Status::CmdExecComplete;
-	//return Status::ErrorReceivePackage;
-	//return Status::ErrorPassword;
-	//return Status::ErrorCombineCharFiles;
     }
 
     fn read(&mut self) -> Status {
@@ -250,22 +246,21 @@ impl<'l> R503<'l> {
 	// Clear buffer.
 	self.buffer.clear();
 
-	// Add header.
-	self.write_cmd_bytes(&START.to_be_bytes()[..]);
-	self.write_cmd_bytes(&ADDRESS.to_be_bytes()[..]);
-
-	// Add command.
-	self.write_cmd_bytes(&[command as u8]);
-
-	// Add checksum.
+	// Setup data package.
+	self.write_cmd_bytes(&START.to_be_bytes()[..]);		// Start
+	self.write_cmd_bytes(&ADDRESS.to_be_bytes()[..]);	// Address
+	self.write_cmd_bytes(&[0x01]);				// Package identifier
+	let mut len = self.buffer.len().try_into().unwrap();
+	self.write_cmd_bytes(&[len]);				// Package Length
+	self.write_cmd_bytes(&[command as u8]);			// Instruction Code
+	if(data != 0) {
+	    self.write_cmd_bytes(&data.to_be_bytes()[..]);	// Data
+	}
 	let chk = self.compute_checksum();
-	self.write_cmd_bytes(&chk.to_be_bytes()[..]);
-
-	// Add data.
-	self.write_cmd_bytes(&data.to_be_bytes()[..]);
+	self.write_cmd_bytes(&chk.to_be_bytes()[..]);		// Checksum
 
 	// Send package.
-//	debug!("Sending package: {:?}", self.buffer);
+	debug!("Sending package: {:?}", self.debug_vec());
 	return self.write();
     }
 
@@ -281,6 +276,18 @@ impl<'l> R503<'l> {
 	    checksum += (*byte) as u16;
 	}
 	return checksum;
+    }
+
+    fn debug_vec(&mut self) -> [u8; 128] {
+	let mut a: [u8; 128] = [0; 128];
+	let mut i = 0;
+
+	for x in &self.buffer {
+	    a[i] = *x;
+	    i = i + 1;
+	}
+
+	return(a);
     }
 
     // ===== System-related instructions
@@ -1190,9 +1197,10 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x0003
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    pub async fn AuraLedConfig(&mut self, ctrl: u8, speed: u8, colour: u8, times: i8) -> Status {
-	// TODO: Merge `ctrl`, `speed`, `colour` and `times`.
-	return self.send_command(Command::AuraLedConfig, ctrl as u32);
+    //pub async fn AuraLedConfig(&mut self, ctrl: u8, speed: u8, colour: u8, times: i8) -> Status {
+    // TODO: Merge `ctrl`, `speed`, `colour` and `times`.
+    pub async fn AuraLedConfig(&mut self, data: u32) -> Status {
+	return self.send_command(Command::AuraLedConfig, data);
     }
 
     // ===== Other instructions

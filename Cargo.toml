@@ -49,3 +49,7 @@ path = "src/set_password.rs"
 [[bin]]
 name = "set_address"
 path = "src/set_address.rs"
+
+[[bin]]
+name = "set_colour"
+path = "src/set_colour.rs"
