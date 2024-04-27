@@ -44,15 +44,12 @@ async fn main(_spawner: Spawner) {
 	ws2812.write(&[(0,0,255).into()]).await;
 	Timer::after_secs(1).await;
 
-	match r503.VfyPwd(0x00000000).await {
+	match r503.SetAdder(0xFFFFFF01).await {
 	    Status::CmdExecComplete => {
-		info!("Fingerprint scanner password correct");
+		info!("Fingerprint scanner address set");
 	    },
 	    Status::ErrorReceivePackage => {
-		info!("ERROR: Fingerprint scanner password check - package receive");
-	    },
-	    Status::ErrorPassword => {
-		info!("ERROR: Fingerprint scanner password check - wrong password");
+		info!("ERROR: Fingerprint scanner address set - package receive");
 	    },
 	    stat => {
 		info!("ERROR: code='{=u8:#04x}'", stat as u8);

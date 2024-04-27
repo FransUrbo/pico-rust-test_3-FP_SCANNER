@@ -13,8 +13,7 @@ use embassy_time::{Timer};
 
 use {defmt_rtt as _, panic_probe as _};
 
-use r503::r503::R503 as R503;
-use r503::r503::Status as Status;
+use r503::r503::{R503, Status};
 use r503::ws2812::Ws2812 as Ws2812;
 
 bind_interrupts!(pub struct Irqs {

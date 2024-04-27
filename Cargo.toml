@@ -46,3 +46,7 @@ path = "src/verify_password.rs"
 [[bin]]
 name = "set_password"
 path = "src/set_password.rs"
+
+[[bin]]
+name = "set_address"
+path = "src/set_address.rs"

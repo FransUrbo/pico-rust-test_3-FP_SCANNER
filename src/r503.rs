@@ -310,7 +310,14 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn SetPwd(&mut self, pass: u32) -> Status {
-	return self.send_command(Command::SetPwd, pass);
+	debug!("Setting module password: '{:?}'", pass);
+
+	let ret = self.send_command(Command::SetPwd, pass);
+	if(ret as u8 == 0) {
+	    return ret;
+	} else {
+	    return Status::ErrorReceivePackage;
+	}
     }
 
     // Description: Set Module address.
@@ -336,7 +343,14 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn SetAdder(&mut self, addr: u32) -> Status {
-	return self.send_command(Command::SetAdder, addr);
+	debug!("Setting module address: '{:?}'", addr);
+
+	let ret = self.send_command(Command::SetAdder, addr);
+	if(ret as u8 == 0) {
+	    return ret;
+	} else {
+	    return Status::ErrorReceivePackage;
+	}
     }
 
     // Description: Operation parameter settings.
