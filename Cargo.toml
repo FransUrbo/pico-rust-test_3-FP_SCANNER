@@ -25,6 +25,7 @@ cortex-m-rt = "0.7.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 pio = "0.2.1"
+pio-proc = "0.2"
 smart-leds = "0.3.0"
 
 [dependencies.chksum8]

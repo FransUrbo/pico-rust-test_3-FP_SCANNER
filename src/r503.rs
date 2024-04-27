@@ -12,6 +12,8 @@ use embassy_rp::pio::{
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::{bind_interrupts, into_ref, Peripheral, PeripheralRef};
 
+use fixed::traits::ToFixed;
+use fixed_macro::types::U56F8;
 use chksum8;
 
 bind_interrupts!(pub struct Irqs {
@@ -130,6 +132,7 @@ pub struct R503<'l> {
     buffer: [u8; 128]
 }
 
+// NOTE: Pins must be consecutive, otherwise it'll segfault!
 impl<'l> R503<'l> {
     pub fn new(
 	pio:		impl Peripheral<P = PIO0> + 'l,
@@ -146,10 +149,25 @@ impl<'l> R503<'l> {
 	    ..
 	} = Pio::new(pio, Irqs);
 
-	let tx = common.make_pio_pin(pin_send);
-	let rx = common.make_pio_pin(pin_receive);
-	let wu = common.make_pio_pin(pin_wakeup);
+	// Send data serially to pin
+	let prg = pio_proc::pio_asm!(
+            r#"
+                .side_set 1 opt
+                .origin 20
+
+                loop:
+                    out x,     24
+                delay:
+                    jmp x--,   delay
+                    out pins,  4     side 1
+                    out null,  4     side 0
+                    jmp !osre, loop
+                irq 0
+            "#
+	);
+
 	let mut cfg = Config::default();
+	cfg.use_program(&common.load_program(&prg.program), &[]);
 
 	// FIFO setup.
 	cfg.fifo_join = FifoJoin::TxOnly;
@@ -160,9 +178,16 @@ impl<'l> R503<'l> {
 	};
 
 	// Pin setup.
-	sm0.set_pin_dirs(Direction::Out, &[&tx]);
-	sm0.set_pin_dirs(Direction::In,  &[&rx, &wu]);	// TODO: Is WakeUp an INPUT or OUTPUT??
-	sm0.set_pins(Level::Low, &[&tx, &rx, &wu]);
+	let tx = common.make_pio_pin(pin_send);
+	let rx = common.make_pio_pin(pin_receive);
+	let wu = common.make_pio_pin(pin_wakeup);
+
+	cfg.set_out_pins(&[&tx]);
+	cfg.set_in_pins(&[&rx, &wu]);
+	cfg.set_set_pins(&[&tx, &rx, &wu]);
+
+	cfg.clock_divider = (U56F8!(125_000_000) / 20 / 200).to_fixed();
+	cfg.shift_out.auto_fill = true;
 
 	sm0.set_config(&cfg);
 	sm0.set_enable(true);
@@ -199,9 +224,10 @@ impl<'l> R503<'l> {
     // This is where the "magic" happens! NO IDEA HOW TO WRITE OR READ TO/FROM THAT THING!!
 
     fn write(&mut self, package: &[u32]) -> Status {
-	debug!("Writing package");
+	debug!("Writing package: {:?}", package);
 
 	// The Python lib uses `self._uart.write(bytearray(packet))` to do the actual write!
+	//self.sm.tx().wait_push(package[0]);
 
 	return Status::CmdExecComplete;
 	//return Status::ErrorReceivePackage;
@@ -222,31 +248,20 @@ impl<'l> R503<'l> {
 	debug!("Sending command {=u32:#04x}", command as u32);
 
 	// Setup package.
+	// TODO: Setup these as a `[u8; 128]` instead.
 	let mut package: [u32; 6] = [0; 6];
-	package[0] = 0xEF01;		// Start (u16)
-	package[1] = 0xFFFFFFFF;	// Address (u32)
-	package[2] = command as u32;	// PID
+	package[0] = 0xEF01;				// Start (u16)
+	package[1] = 0xFFFFFFFF;			// Address (u32)
+	package[2] = command as u32;			// PID (u8)
 	if(data != 0) {
-	    package[4] = data as u32;
+	    package[4] = data as u32;			// DATA (-)
 	}
-	package[3] = package.len() as u32;
-	package[5] = chksum8::sum(&package) as u32;
-	debug!("Package: {:?}", package);
+	package[3] = package.len() as u32;		// LENGTH (u16)
+	package[5] = chksum8::sum(&package) as u32;	// SUM (u16)
+	debug!("Sending package: {:?}", package);
 
 	// Send package.
 	return self.write(&package);
-    }
-
-    fn compute_length(&self) -> u16 {
-	debug!("Computing package length");
-
-	return 0;
-    }
-
-    fn parse_reply(&self) -> Status {
-	debug!("Parsing reply");
-
-	return Status::CmdExecComplete;
     }
 
     // ===== System-related instructions
@@ -354,7 +369,7 @@ impl<'l> R503<'l> {
     }
 
     // Description: Operation parameter settings.
-    // Input Parameter: Parameter number.
+    // Input Parameter: Parameter number (1 + 1 byte).
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: parameter setting complete;
     //   Confirmation code=01H: error when receiving package;
@@ -377,14 +392,15 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x03
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    pub async fn SetSysPara(&mut self, param: u8) -> Status {
+    pub async fn SetSysPara(&mut self, param: u8, content: u8) -> Status {
+	// TODO: Merge `param` and `content`.
 	return self.send_command(Command::SetSysPara, param as u32);
     }
 
     // Description:
     //   For UART protocol, it control the “on/off” of USB port;
     //   For USB protocol, it control the “on/off” of UART port;
-    // Input Parameter: control code
+    // Input Parameter: control code (1 byte).
     //   Control code ”0” means turns off the port;
     //   Control code ”1” means turns on the port;
     // Return Parameter: Confirmation code (1 byte)
@@ -408,13 +424,13 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x03
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    pub async fn Control(&mut self, ctrl: bool) -> Status {
+    pub async fn Control(&mut self, ctrl: u8) -> Status {
 	return self.send_command(Command::Control, ctrl as u32);
     }
 
     // Description: Read Module’s status register and system basic configuration parameters.
     // Input Parameter: none
-    // Return Parameter: Confirmation code (1 byte) + basic parameter(16bytes)
+    // Return Parameter: Confirmation code (1 byte) + Basic Parameter List (16 bytes)
     //   Confirmation code=00H: read complete;
     //   Confirmation code=01H: error when receiving package;
     // Instruction code: 0fH
@@ -434,13 +450,14 @@ impl<'l> R503<'l> {
     //   Data			16 bytes
     //     Basic Param List	16 byte
     //   Checksum		 2 bytes	Sum		(see top)
+    // TODO: Return `Status` and ... (16 bytes - `[u8, 16]`)??
     pub async fn ReadSysPara(&mut self) -> Status {
 	return self.send_command(Command::ReadSysPara, 0 as u32);
     }
 
     // Description: read the current valid template number of the Module.
     // Input Parameter: none
-    // Return Parameter: Confirmation code (1 byte) +template number:N
+    // Return Parameter: Confirmation code (1 byte) + Template number (2 bytes)
     //   Confirmation code=0x00: read success;
     //   Confirmation code=0x01: error when receiving package;
     // Instruction code: 1dH
@@ -460,19 +477,20 @@ impl<'l> R503<'l> {
     //   Data			 2 bytes
     //     Template Number	 2 byte
     //   Checksum		 2 bytes	Sum		(see top)
+    // TODO: Return `Status` and ... (2 bytes - `[u8, 2]`)??
     pub async fn TempleteNum(&mut self) -> Status {
 	return self.send_command(Command::TempleteNum, 0 as u32);
     }
 
     // Description: Read the fingerprint template index table of the module,
     //              read the index table of the fingerprint template up to 256 at a time (32 bytes).
-    // Input Parameter: Index page
+    // Input Parameter: Index page (1 byte)
     //   Index tables are read per page, 256 templates per page
     //   Index page 0 means to read 0 ~ 255 fingerprint template index table;
     //   Index page 1 means to read 256 ~ 511 fingerprint template index table;
     //   Index page 2 means to read 512 ~ 767 fingerprint template index table;
     //   Index page 3 means to read 768 ~ 1023 fingerprint template index table
-    // Return Parameter: Confirmation code + Fingerprint template index table
+    // Return Parameter: Confirmation code (1 byte) + Fingerprint Template Index Table (32 bytes)
     //   Confirmation code=0x00: read complete;
     //   Confirmation code=0x01: error when receiving package;
     // Instruction code: 1fH
@@ -494,6 +512,7 @@ impl<'l> R503<'l> {
     //   Data			32 bytes
     //     Index Page		32 bytes			(see documentation)
     //   Checksum		 2 bytes	Sum		(see top)
+    // TODO: Return `Status` and ... (32 bytes - `[u8, 32]`)??
     pub async fn ReadIndexTable(&mut self, page: u8) -> Status {
 	return self.send_command(Command::ReadIndexTable, page as u32);
     }
@@ -582,7 +601,8 @@ impl<'l> R503<'l> {
     //              file in CharBuffer1 or CharBuffer2.
     //              Note: BufferID of CharBuffer1 and CharBuffer2 are 1h and 2h respectively. Other values
     //                    (except 1h, 2h) would be processed as CharBuffer2.
-    // Input Parameter: BufferID (character file buffer number)
+    // Input Parameter: (1 byte)
+    //   BufferID - character file buffer number (1 byte).
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: generate character file complete;
     //   Confirmation code=01H: error when receiving package;
@@ -641,7 +661,7 @@ impl<'l> R503<'l> {
     // Description: Upload the character file or template of CharBuffer1/CharBuffer2 to upper computer.
     //              Note: BufferID of CharBuffer1 and CharBuffer2 are 1h and 2h respectively. Other values
     //                    (except 1h, 2h) would be processed as CharBuffer2.
-    // Input Parameter: BufferID (Buffer number)
+    // Input Parameter: BufferID - buffer number (1 byte).
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: ready to transfer the following data packet;
     //   Confirmation code=01H: error when receiving package;
@@ -668,7 +688,7 @@ impl<'l> R503<'l> {
     }
 
     // Description: Upper computer download template to module buffer.
-    // Input Parameter: CharBufferID (Buffer number)
+    // Input Parameter: CharBufferID - buffer number (1 byte).
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: ready to transfer the following data packet;
     //   Confirmation code=01H: error when receiving package;
@@ -698,9 +718,9 @@ impl<'l> R503<'l> {
     //              of Flash library.
     //              Note: BufferID of CharBuffer1 and CharBuffer2 are 1h and 2h respectively. Other values
     //                    (except 1h, 2h) would be processed as CharBuffer2.
-    // Input Parameter:
-    //   BufferID(buffer number);
-    //   PageID(Flash location of the template, two bytes with high byte front and low byte behind)
+    // Input Parameter: (1 + 2 bytes)
+    //   BufferID - buffer number (1 byte);
+    //   PageID - flash location of the template, two bytes with high byte front and low byte behind (2 bytes)
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: storage success;
     //   Confirmation code=01H: error when receiving package;
@@ -731,9 +751,9 @@ impl<'l> R503<'l> {
 
     // Description: Load template at the specified location (PageID) of Flash library to template buffer
     //              CharBuffer1/CharBuffer2
-    // Input Parameter:
-    //   BufferID(buffer number);
-    //   PageID (Flash location of the template, two bytes with high byte front and low byte behind)。
+    // Input Parameter: (1 + 2 bytes).
+    //   BufferID - buffer number (1 byte);
+    //   PageID - flash location of the template, two bytes with high byte front and low byte behind (2 bytes).
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: load success;
     //   Confirmation code=01H: error when receiving package;
@@ -764,9 +784,9 @@ impl<'l> R503<'l> {
 
     // Description: Delete a segment (N) of templates of Flash library started from the specified location
     //              (or PageID);
-    // Input Parameter:
-    //   PageID (template number in Flash);
-    //   N (number of templates to be deleted)
+    // Input Parameter: (2 + 2 bytes)
+    //   PageID - template number in flash (2 bytes).
+    //   N - number of templates to be deleted (2 bytes).
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: delete success;
     //   Confirmation code=01H: error when receiving package;
@@ -789,7 +809,7 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x03
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    pub async fn DeletChar(&mut self, page: u8, n: u8) -> Status {
+    pub async fn DeletChar(&mut self, page: u16, n: u16) -> Status {
 	// TODO: Merge `buff` and `page`.
 	return self.send_command(Command::DeletChar, page as u32);
     }
@@ -849,14 +869,17 @@ impl<'l> R503<'l> {
 
     // Description: Search the whole finger library for the template that matches the one in CharBuffer1
     //              or CharBuffer2. When found, PageID will be returned.
-    // Input Parameter:
-    //   BufferID;
-    //   StartPage (searching start address);
-    //   PageNum (searching numbers)
-    // Return Parameter: Confirmation code (1 byte) + PageID (matching templates location)
-    //   Confirmation code=00H: found the matching finer;
-    //   Confirmation code=01H: error when receiving package;
-    //   Confirmation code=09H: No matching in the library (both the PageID and matching score are 0);
+    // Input Parameter: (1 + 2 + 2 bytes).
+    //   BufferID - character file buffer number (1 byte).
+    //   StartPage - searching start address (2 bytes).
+    //   PageNum - searching numbers (2 bytes)
+    // Return Parameter:
+    //   Confirmation code (1 byte).
+    //     Confirmation code=00H: found the matching finer;
+    //     Confirmation code=01H: error when receiving package;
+    //     Confirmation code=09H: No matching in the library (both the PageID and matching score are 0);
+    //   PageID - matching templates location (2 bytes).
+    //   MatchScore (2 bytes).
     // Instruction code: 04H
     // Command Package format:
     //   Header			 2 bytes	0xEF01
@@ -879,6 +902,7 @@ impl<'l> R503<'l> {
     //     PageID		 2 bytes
     //     MatchScore		 2 bytes
     //   Checksum		 2 bytes	Sum		(see top)
+    // TODO: Return `Status`, PageID (2 bytes - `[u8, 2]`) and MatchScore (2 bytes - `[u8, 2]`)??
     pub async fn Search(&mut self, buff: u8, start: u16, page: u16) -> Status {
 	// TODO: Merge `buff`, `start` and `page`.
 	return self.send_command(Command::Search, buff as u32);
@@ -895,7 +919,7 @@ impl<'l> R503<'l> {
     //                GetImageEx: Return the confirmation code 0x07 when the image quality is too bad
     //                            (poor collection quality).
     // Input Parameter: none
-    // Return Parameter: Confirmation code
+    // Return Parameter: Confirmation code (1 byte).
     //   Confirmation code=0x00: read success
     //   Confirmation code=0x01: error when receiving package;
     //   Confirmation code=0x02: no fingers on the sensor;
@@ -922,7 +946,7 @@ impl<'l> R503<'l> {
 
     // Description: Cancel instruction
     // Input Parameter: none
-    // Return Parameter: Confirmation code
+    // Return Parameter: Confirmation code (1 byte).
     //   Confirmation code=0x00: cancel setting successful;
     //   Confirmation code=other: cancel setting failed;
     // Instruction code: 30H
@@ -949,7 +973,7 @@ impl<'l> R503<'l> {
     //              send instructions to the module.If the confirmation code is other or no reply,
     //              it means that the device is abnormal.
     // Input Parameter: none
-    // Return Parameter: Confirmation code
+    // Return Parameter: Confirmation code (1 byte).
     //   Confirmation code=0x00: the device is normal and can receive instructions;
     //   Confirmation code=other: the device is abnormal;
     // Instruction code: 40H
@@ -973,7 +997,7 @@ impl<'l> R503<'l> {
 
     // Description: Check whether the sensor is normal.
     // Input Parameter: none
-    // Return Parameter: Confirmation code
+    // Return Parameter: Confirmation code (1 byte).
     //   Confirmation code=0x00: the sensor is normal;
     //   Confirmation code=0x29: the sensor is abnormal;
     // Instruction code: 36H
@@ -997,9 +1021,11 @@ impl<'l> R503<'l> {
 
     // Description: Get the algorithm library version.
     // Input Parameter: none
-    // Return Parameter: Confirmation code (1 byte) + AlgVer (algorithm library version string)
-    //   Confirmation code=0x00: success;
-    //   Confirmation code=0x01: error when receiving package;
+    // Return Parameter:
+    //   Confirmation code (1 byte).
+    //     Confirmation code=0x00: success;
+    //     Confirmation code=0x01: error when receiving package;
+    //   AlgVer - algorithm library version string (32 bytes).
     // Instruction code: 39H
     // Command Package format:
     //   Header			 2 bytes	0xEF01
@@ -1017,15 +1043,18 @@ impl<'l> R503<'l> {
     //   Data			32 bytes
     //     AlgVer		32 bytes
     //   Checksum		 2 bytes	Sum		(see top)
+    // TODO: Return `Status` and AlgVer (32 bytes - `[u8, 32]`)??
     pub async fn GetAlgVer(&mut self) -> Status {
 	return self.send_command(Command::GetAlgVer, 0 as u32);
     }
 
     // Description: Get the firmware version.
     // Input Parameter: none
-    // Return Parameter: Confirmation code + FwVer (Firmware version string)
-    //   Confirmation code=0x00: success;
-    //   Confirmation code=0x01: error when receiving package;
+    // Return Parameter:
+    //   Confirmation code (1 byte).
+    //     Confirmation code=0x00: success;
+    //     Confirmation code=0x01: error when receiving package;
+    //   FwVer - firmware version string (32 bytes).
     // Instruction code: 3aH
     // Command Package format:
     //   Header			 2 bytes	0xEF01
@@ -1043,15 +1072,18 @@ impl<'l> R503<'l> {
     //   Data			32 bytes
     //     FwVer		32 bytes
     //   Checksum		 2 bytes	Sum		(see top)
+    // TODO: Return `Status` and FwVer (32 bytes - `[u8, 32]`)??
     pub async fn GetFwVer(&mut self) -> Status {
 	return self.send_command(Command::GetFwVer, 0 as u32);
     }
 
     // Description: Read product information.
     // Input Parameter: none
-    // Return Parameter: Confirmation code + ProdInfo (product information)
-    //   Confirmation code=0x00: success;
-    //   Confirmation code=0x01: error when receiving package;
+    // Return Parameter:
+    //   Confirmation code (1 byte).
+    //     Confirmation code=0x00: success;
+    //     Confirmation code=0x01: error when receiving package;
+    //   ProdInfo - product information (46 bytes).
     // Instruction code: 3cH
     // Command Package format:
     //   Header			 2 bytes	0xEF01
@@ -1069,6 +1101,7 @@ impl<'l> R503<'l> {
     //   Data			46 bytes
     //     ProdInfo		46 bytes			(see documentation)
     //   Checksum		 2 bytes	Sum		(see top)
+    // TODO: Return `Status` and ProdInfo (46 bytes - `[u8, 46]`)??
     pub async fn ReadProdInfo(&mut self) -> Status {
 	return self.send_command(Command::ReadProdInfo, 0 as u32);
     }
@@ -1076,7 +1109,7 @@ impl<'l> R503<'l> {
     // Description: Send soft reset instruction to the module. If the module works normally, return
     //              confirmation code 0x00, and then perform reset operation.
     // Input Parameter: none
-    // Return Parameter: Confirmation code (1 byte)
+    // Return Parameter: Confirmation code (1 byte).
     //   Confirmation code=0x00: success;
     //   Confirmation code=other: device is abnormal
     // Instruction code: 3dH
@@ -1099,23 +1132,23 @@ impl<'l> R503<'l> {
     }
 
     // Description: Aura LED control
-    // Input Parameter:
-    //   Control code;
+    // Input Parameter: (1 + 1 + 1 + 1 byte)
+    //   Control (1 byte).
     //     0x01: Breathing light
     //     0x02: Flashing light
     //     0x03: Light Always on
     //     0x04: Light Always off
     //     0x05: Light gradually on
     //     0x06: Light gradually off
-    //   Speed;
+    //   Speed (1 byte).
     //     0x00-0xff, 256 gears, Minimum 5s cycle.
-    //   ColorIndex;
+    //   ColorIndex (1 byte).
     //     0x01: Red
     //     0x02: Blue
     //     0x03: Purple
-    //   Times
+    //   Times (1 byte).
     //     Number of cycles: 0- infinite, 1-255.
-    // Return Parameter: Confirmation code (1 byte)
+    // Return Parameter: Confirmation code (1 byte).
     //   Confirmation code=0x00: success;
     //   Confirmation code=0x01: error when receiving package;
     // Instruction code: 35H
@@ -1147,7 +1180,7 @@ impl<'l> R503<'l> {
 
     // Description: Command the Module to generate a random number and return it to upper computer.
     // Input Parameter: none
-    // Return Parameter: Confirmation code (1 byte)
+    // Return Parameter: Confirmation code (1 byte).
     //   Confirmation code=00H: generation success;
     //   Confirmation code=01H: error when receiving package;
     // Instruction code: 14H
@@ -1173,7 +1206,7 @@ impl<'l> R503<'l> {
 
     // Description: read information page(512bytes)
     // Input Parameter: none
-    // Return Parameter: Confirmation code (1 byte)
+    // Return Parameter: Confirmation code (1 byte).
     //   Confirmation code=00H: ready to transfer the following data packet;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0fH: can not transfer the following data packet;
@@ -1197,7 +1230,9 @@ impl<'l> R503<'l> {
     }
 
     // Description: Upper computer to write data to the specified Flash page. Also see ReadNotepad.
-    // Input Parameter: NotePageNum, user content (or data content)
+    // Input Parameter:
+    //   PageNumber - notepad page number (1 byte).
+    //   Content - data (32 bytes).
     // Return Parameter: Confirmation code (1 byte)
     //   Confirmation code=00H: write success;
     //   Confirmation code=01H: error when receiving package;
@@ -1219,15 +1254,18 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x03
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    pub async fn WriteNotepad(&mut self, page: u8) -> Status {
+    pub async fn WriteNotepad(&mut self, page: u8, content: &[u128; 2]) -> Status { // u128 => 16 bytes
+	// TODO: Merge `page` and `content`.
 	return self.send_command(Command::WriteNotepad, page as u32);
     }
 
     // Description: Read the specified page’s data content. Also see WriteNotepad.
     // Input Parameter: none
-    // Return Parameter: Confirmation code (1 byte) + data content
-    //   Confirmation code=00H: read success;
-    //   Confirmation code=01H: error when receiving package;
+    // Return Parameter:
+    //   Confirmation code (1 byte).
+    //     Confirmation code=00H: read success;
+    //     Confirmation code=01H: error when receiving package;
+    //   Data content (32 bytes).
     // Instruction code: 19H
     // Command Package format:
     //   Header			 2 bytes	0xEF01
@@ -1247,6 +1285,7 @@ impl<'l> R503<'l> {
     //   Data			32 bytes
     //     User Content		32 bytes
     //   Checksum		 2 bytes	Sum		(see top)
+    // TODO: Return `Status` and User Content (32 bytes - `[u8, 32]`)??
     pub async fn ReadNotepad(&mut self) -> Status {
 	return self.send_command(Command::ReadNotepad, 0 as u32);
     }
