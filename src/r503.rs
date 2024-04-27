@@ -309,8 +309,8 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x03
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    pub async fn SetPwd(&mut self, pass: char) -> Status {
-	return self.send_command(Command::SetPwd, pass as u32);
+    pub async fn SetPwd(&mut self, pass: u32) -> Status {
+	return self.send_command(Command::SetPwd, pass);
     }
 
     // Description: Set Module address.

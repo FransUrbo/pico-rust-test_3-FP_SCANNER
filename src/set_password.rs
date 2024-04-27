@@ -13,10 +13,9 @@ use embassy_time::{Timer};
 
 use {defmt_rtt as _, panic_probe as _};
 
-pub mod r503;
-use crate::r503::R503;
-pub mod ws2812;
-use crate::ws2812::Ws2812;
+use r503::r503::R503 as R503;
+use r503::r503::Status as Status;
+use r503::ws2812::Ws2812 as Ws2812;
 
 bind_interrupts!(pub struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
@@ -46,15 +45,12 @@ async fn main(_spawner: Spawner) {
 	ws2812.write(&[(0,0,255).into()]).await;
 	Timer::after_secs(1).await;
 
-	match r503.VfyPwd(0x00000000).await {
-	    r503::Status::CmdExecComplete => {
-		info!("Fingerprint scanner password correct");
+	match r503.SetPwd(0x00100000).await {
+	    Status::CmdExecComplete => {
+		info!("Fingerprint scanner password set");
 	    },
-	    r503::Status::ErrorReceivePackage => {
-		info!("ERROR: Fingerprint scanner password check - package receive");
-	    },
-	    r503::Status::ErrorPassword => {
-		info!("ERROR: Fingerprint scanner password check - wrong password");
+	    Status::ErrorReceivePackage => {
+		info!("ERROR: Fingerprint scanner password set - package receive");
 	    },
 	    stat => {
 		info!("ERROR: code='{=u8:#04x}'", stat as u8);
