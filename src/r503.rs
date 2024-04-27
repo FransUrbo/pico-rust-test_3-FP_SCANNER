@@ -14,7 +14,7 @@ use embassy_rp::{bind_interrupts, into_ref, Peripheral, PeripheralRef};
 
 use fixed::traits::ToFixed;
 use fixed_macro::types::U56F8;
-use chksum8;
+use heapless::Vec;
 
 bind_interrupts!(pub struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -22,7 +22,8 @@ bind_interrupts!(pub struct Irqs {
 
 // =====
 
-const ADDRESS: [i32; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
+const ADDRESS: u32 = 0xFFFFFFFF;
+const START:   u16 = 0xEF01;
 
 #[derive(Copy, Clone)]
 #[repr(u8)]
@@ -129,7 +130,7 @@ pub struct R503<'l> {
     dma: PeripheralRef<'l, AnyChannel>,
     sm: StateMachine<'l, PIO0, 0>,
 
-    buffer: [u8; 128]
+    buffer: Vec<u8, 128>
 }
 
 // NOTE: Pins must be consecutive, otherwise it'll segfault!
@@ -149,25 +150,25 @@ impl<'l> R503<'l> {
 	    ..
 	} = Pio::new(pio, Irqs);
 
-	// Send data serially to pin
-	let prg = pio_proc::pio_asm!(
-            r#"
-                .side_set 1 opt
-                .origin 20
-
-                loop:
-                    out x,     24
-                delay:
-                    jmp x--,   delay
-                    out pins,  4     side 1
-                    out null,  4     side 0
-                    jmp !osre, loop
-                irq 0
-            "#
-	);
+//	// Send data serially to pin
+//	let prg = pio_proc::pio_asm!(
+//            r#"
+//                .side_set 1 opt
+//                .origin 20
+//
+//                loop:
+//                    out x,     24
+//                delay:
+//                    jmp x--,   delay
+//                    out pins,  4     side 1
+//                    out null,  4     side 0
+//                    jmp !osre, loop
+//                irq 0
+//            "#
+//	);
 
 	let mut cfg = Config::default();
-	cfg.use_program(&common.load_program(&prg.program), &[]);
+//	cfg.use_program(&common.load_program(&prg.program), &[]);
 
 	// FIFO setup.
 	cfg.fifo_join = FifoJoin::TxOnly;
@@ -195,7 +196,7 @@ impl<'l> R503<'l> {
 	Self {
 	    dma:    dma.map_into(),
 	    sm:     sm0,
-	    buffer: [0x20; 128]
+	    buffer: heapless::Vec::new()
 	}
     }
 
@@ -223,11 +224,10 @@ impl<'l> R503<'l> {
 
     // This is where the "magic" happens! NO IDEA HOW TO WRITE OR READ TO/FROM THAT THING!!
 
-    fn write(&mut self, package: &[u32]) -> Status {
-	debug!("Writing package: {:?}", package);
+    fn write(&mut self) -> Status {
+//	debug!("Writing package: {:?}", self.buffer);
 
-	// The Python lib uses `self._uart.write(bytearray(packet))` to do the actual write!
-	//self.sm.tx().wait_push(package[0]);
+	//self.sm.tx().wait_push(data);
 
 	return Status::CmdExecComplete;
 	//return Status::ErrorReceivePackage;
@@ -247,21 +247,40 @@ impl<'l> R503<'l> {
     fn send_command(&mut self, command: Command, data: u32) -> Status {
 	debug!("Sending command {=u32:#04x}", command as u32);
 
-	// Setup package.
-	// TODO: Setup these as a `[u8; 128]` instead.
-	let mut package: [u32; 6] = [0; 6];
-	package[0] = 0xEF01;				// Start (u16)
-	package[1] = 0xFFFFFFFF;			// Address (u32)
-	package[2] = command as u32;			// PID (u8)
-	if(data != 0) {
-	    package[4] = data as u32;			// DATA (-)
-	}
-	package[3] = package.len() as u32;		// LENGTH (u16)
-	package[5] = chksum8::sum(&package) as u32;	// SUM (u16)
-	debug!("Sending package: {:?}", package);
+	// Clear buffer.
+	self.buffer.clear();
+
+	// Add header.
+	self.write_cmd_bytes(&START.to_be_bytes()[..]);
+	self.write_cmd_bytes(&ADDRESS.to_be_bytes()[..]);
+
+	// Add command.
+	self.write_cmd_bytes(&[command as u8]);
+
+	// Add checksum.
+	let chk = self.compute_checksum();
+	self.write_cmd_bytes(&chk.to_be_bytes()[..]);
+
+	// Add data.
+	self.write_cmd_bytes(&data.to_be_bytes()[..]);
 
 	// Send package.
-	return self.write(&package);
+//	debug!("Sending package: {:?}", self.buffer);
+	return self.write();
+    }
+
+    fn write_cmd_bytes(&mut self, bytes: &[u8]) {
+	self.buffer.extend_from_slice(bytes);
+    }
+
+    fn compute_checksum(&self) -> u16 {
+	let mut checksum = 0u16;
+	let check_end = self.buffer.len();
+	let checked_bytes = &self.buffer[6..check_end];
+	for byte in checked_bytes {
+	    checksum += (*byte) as u16;
+	}
+	return checksum;
     }
 
     // ===== System-related instructions

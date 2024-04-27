@@ -20,17 +20,15 @@ defmt-rtt = "0.4"
 fixed = "1.23.1"
 fixed-macro = "1.2"
 
-cortex-m = { version = "0.7.6", features = ["inline-asm"] }
-cortex-m-rt = "0.7.0"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
-
 pio = "0.2.1"
 pio-proc = "0.2"
 smart-leds = "0.3.0"
 
-[dependencies.chksum8]
-git = "https://github.com/GabrielMajeri/chksum8.git"
-rev = "943ed1abf8f88cb58aedcdac3a833c32521ba225"
+heapless = {}
+
+cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+cortex-m-rt = "0.7.0"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 [profile.dev]
 debug = 2
