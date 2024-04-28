@@ -137,7 +137,8 @@ pub enum AuroraLEDColour {
 
 pub struct R503<'l> {
     dma:	PeripheralRef<'l, AnyChannel>,
-    sm:		StateMachine<'l, PIO0, 0>,
+    smO:	StateMachine<'l, PIO0, 0>,	// OUT
+    smI:	StateMachine<'l, PIO0, 1>,	// IN
     buffer:	Vec<u8, 128>
 }
 
@@ -155,38 +156,64 @@ impl<'l> R503<'l> {
 	let Pio {
 	    mut common,
 	    mut sm0,
+	    mut sm1,
 	    ..
 	} = Pio::new(pio, Irqs);
-
-	let mut cfg = Config::default();
-//	cfg.use_program(&common.load_program(&prg.program), &[&pin_send]);
-
-	// FIFO setup.
-	cfg.fifo_join = FifoJoin::TxOnly;
-	cfg.shift_out = ShiftConfig {
-	    auto_fill: false,
-	    threshold: 24,
-	    direction: ShiftDirection::Left,
-	};
 
 	// Pin setup.
 	let tx = common.make_pio_pin(pin_send);
 	let rx = common.make_pio_pin(pin_receive);
 	let wu = common.make_pio_pin(pin_wakeup);
 
-	cfg.set_out_pins(&[&tx]);
-	cfg.set_in_pins(&[&rx, &wu]);
-	cfg.set_set_pins(&[&tx, &rx, &wu]);
+	// Setup the OUTPUT StateMachine (sm0).
+	// ========================================
 
-	cfg.clock_divider = (U56F8!(125_000_000) / 20 / 200).to_fixed();
+	let mut cfg_out = Config::default();
+//	cfg_out.use_program(&common.load_program(&prg_out.program), &[&pin_send]);
 
-	sm0.set_config(&cfg);
+	// FIFO setup.
+	cfg_out.fifo_join = FifoJoin::TxOnly;
+	cfg_out.shift_out = ShiftConfig {
+	    auto_fill: false,
+	    threshold: 24,
+	    direction: ShiftDirection::Left,
+	};
+
+	cfg_out.set_out_pins(&[&tx]);
+	cfg_out.set_set_pins(&[&tx]);
+
+	cfg_out.clock_divider = (U56F8!(125_000_000) / 20 / 200).to_fixed();
+
+	sm0.set_config(&cfg_out);
+	sm0.set_enable(true);
+
+	// Setup the INPUT StateMachine (sm1).
+	// ========================================
+
+	let mut cfg_in = Config::default();
+//	cfg_in.use_program(&common.load_program(&prg_in.program), &[&pin_receive, &pin_wakeup]);
+
+	// FIFO setup.
+	cfg_in.fifo_join = FifoJoin::RxOnly;
+	cfg_in.shift_out = ShiftConfig {
+	    auto_fill: false,
+	    threshold: 24,
+	    direction: ShiftDirection::Right,
+	};
+
+	cfg_in.set_in_pins(&[&rx, &wu]);
+	cfg_in.set_set_pins(&[&rx, &wu]); // => Must be consecutive!
+
+	cfg_in.clock_divider = (U56F8!(125_000_000) / 20 / 200).to_fixed();
+
+	sm0.set_config(&cfg_in);
 	sm0.set_enable(true);
 
 	Self {
-	    dma:    dma.map_into(),
-	    sm:     sm0,
-	    buffer: heapless::Vec::new()
+	    dma:	dma.map_into(),
+	    smO:	sm0,
+	    smI:	sm1,
+	    buffer:	heapless::Vec::new()
 	}
     }
 
