@@ -34,29 +34,29 @@ async fn main(_spawner: Spawner) {
     // Initialize the multi-colour LED.
     let Pio { mut common, sm0, .. } = Pio::new(p.PIO1, Irqs);
     let mut ws2812 = Ws2812::new(&mut common, sm0, p.DMA_CH1, p.PIN_15);
-    let mut data = (0,0,255).into(); // BLUE
 
-    loop {
-	debug!("NeoPixel OFF");
-	ws2812.write(&[(0,0,0).into()]).await;
-	Timer::after_secs(1).await;
+    debug!("NeoPixel OFF");
+    ws2812.write(&[(0,0,0).into()]).await;
+    Timer::after_secs(1).await;
 
-	debug!("NeoPixel ON");
-	ws2812.write(&[data]).await;
-	Timer::after_secs(1).await;
+    debug!("NeoPixel ON");
+    ws2812.write(&[(0,0,255).into()]).await; // BLUE
+    Timer::after_secs(1).await;
 
-	match r503.AuraLedConfig(0x02, 0x10, 0x03, 0x00).await {
-	    Status::CmdExecComplete => {
-		info!("Fingerprint scanner LED set to RED");
-		data = (255,0,0).into(); // GREEN
-	    },
-	    Status::ErrorReceivePackage => {
-		info!("ERROR: Fingerprint scanner LED set - package receive");
-		data = (0,255,0).into(); // RED
-	    },
-	    stat => {
-		info!("ERROR: code='{=u8:#04x}'", stat as u8);
-	    }
+    match r503.AuraLedConfig(0x02, 0x10, 0x03, 0x00).await {
+	Status::CmdExecComplete => {
+	    info!("Fingerprint scanner LED set to RED");
+	    ws2812.write(&[(255,0,0).into()]).await; // RED
+	},
+	Status::ErrorReceivePackage => {
+	    info!("ERROR: Fingerprint scanner LED set - package receive");
+	    ws2812.write(&[(0,255,0).into()]).await; // ORANGE
+	},
+	stat => {
+	    info!("ERROR: code='{=u8:#04x}'", stat as u8);
 	}
     }
+
+    debug!("NeoPixel GREEN");
+    ws2812.write(&[(255,0,0).into()]).await; // GREEN
 }
