@@ -45,8 +45,7 @@ async fn main(_spawner: Spawner) {
 	ws2812.write(&[data]).await;
 	Timer::after_secs(1).await;
 
-	//match r503.AuraLedConfig(0x02, 0x10, 0x03, 0x00).await {
-	match r503.AuraLedConfig(0x02100300).await {
+	match r503.AuraLedConfig(0x02, 0x10, 0x03, 0x00).await {
 	    Status::CmdExecComplete => {
 		info!("Fingerprint scanner LED set to RED");
 		data = (255,0,0).into(); // GREEN

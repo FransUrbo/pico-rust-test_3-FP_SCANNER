@@ -223,7 +223,8 @@ impl<'l> R503<'l> {
     // This is where the "magic" happens! NO IDEA HOW TO WRITE OR READ TO/FROM THAT THING!!
 
     fn write(&mut self) -> Status {
-	debug!("Writing package: {:?}", self.debug_vec());
+	debug!("Writing package: {:?}", self.debug_vec(false));
+	self.debug_vec(true);
 
 	for byte in &self.buffer {
 	    self.sm.tx().wait_push(*byte as u32);
@@ -260,7 +261,8 @@ impl<'l> R503<'l> {
 	self.write_cmd_bytes(&chk.to_be_bytes()[..]);		// Checksum
 
 	// Send package.
-	debug!("Sending package: {:?}", self.debug_vec());
+	debug!("Sending package: {:?}", self.debug_vec(false));
+	self.debug_vec(true);
 	return self.write();
     }
 
@@ -278,11 +280,14 @@ impl<'l> R503<'l> {
 	return checksum;
     }
 
-    fn debug_vec(&mut self) -> [u8; 128] {
+    fn debug_vec(&mut self, out: bool) -> [u8; 128] {
 	let mut a: [u8; 128] = [0; 128];
 	let mut i = 0;
 
 	for x in &self.buffer {
+	    if(out) {
+		debug!("  x({:02})='{=u8:#04x}'", i, x);
+	    }
 	    a[i] = *x;
 	    i = i + 1;
 	}
@@ -1197,9 +1202,9 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x0003
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    //pub async fn AuraLedConfig(&mut self, ctrl: u8, speed: u8, colour: u8, times: i8) -> Status {
-    // TODO: Merge `ctrl`, `speed`, `colour` and `times`.
-    pub async fn AuraLedConfig(&mut self, data: u32) -> Status {
+    pub async fn AuraLedConfig(&mut self, ctrl: u8, speed: u8, colour: u8, times: u8) -> Status {
+	// Merge the inputs into one u32.
+	let data = u32::from_be_bytes([ctrl, speed, colour, times]);
 	return self.send_command(Command::AuraLedConfig, data);
     }
 
