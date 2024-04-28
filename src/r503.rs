@@ -226,9 +226,9 @@ impl<'l> R503<'l> {
 	debug!("Writing package: {:?}", self.debug_vec(false).await);
 	self.debug_vec(true).await;
 
-	for byte in &self.buffer {
-	    self.sm.tx().wait_push(*byte as u32);
-	}
+//	for byte in &self.buffer {
+//	    self.sm.tx().wait_push(*byte as u32);
+//	}
 	return Status::CmdExecComplete;
     }
 
@@ -261,8 +261,6 @@ impl<'l> R503<'l> {
 	self.write_cmd_bytes(&chk.to_be_bytes()[..]).await;		// Checksum
 
 	// Send package.
-	debug!("Sending package: {:?}", self.debug_vec(false).await);
-	self.debug_vec(true).await;
 	return self.write().await;
     }
 
@@ -286,7 +284,7 @@ impl<'l> R503<'l> {
 
 	for x in &self.buffer {
 	    if(out) {
-		debug!("  x({:03})='{=u8:#04x}'", i, x);
+		debug!("  x({:03})='{=u8:#04x}H' ({:03}D)", i, x, x);
 	    }
 	    a[i] = *x;
 	    i = i + 1;
