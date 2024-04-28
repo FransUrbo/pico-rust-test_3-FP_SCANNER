@@ -107,6 +107,15 @@ pub enum Packets {
 
 #[derive(Copy, Clone)]
 #[repr(u8)]
+pub enum PacketCode {
+    CommandPacket	= 0x01,
+    DataPacket		= 0x02,
+    AckPacket		= 0x07,
+    DataPackageEnd	= 0x08
+}
+
+#[derive(Copy, Clone)]
+#[repr(u8)]
 pub enum AuroraLEDControl {
     BreathingLight	= 0x01,
     FlashingLight	= 0x02,
@@ -149,25 +158,8 @@ impl<'l> R503<'l> {
 	    ..
 	} = Pio::new(pio, Irqs);
 
-//	// Send data serially to pin
-//	let prg = pio_proc::pio_asm!(
-//            r#"
-//                .side_set 1 opt
-//                .origin 20
-//
-//                loop:
-//                    out x,     24
-//                delay:
-//                    jmp x--,   delay
-//                    out pins,  4     side 1
-//                    out null,  4     side 0
-//                    jmp !osre, loop
-//                irq 0
-//            "#
-//	);
-
 	let mut cfg = Config::default();
-//	cfg.use_program(&common.load_program(&prg.program), &[]);
+//	cfg.use_program(&common.load_program(&prg.program), &[&pin_send]);
 
 	// FIFO setup.
 	cfg.fifo_join = FifoJoin::TxOnly;
@@ -250,11 +242,17 @@ impl<'l> R503<'l> {
 	// Setup data package.
 	self.write_cmd_bytes(&START.to_be_bytes()[..]).await;		// Start
 	self.write_cmd_bytes(&ADDRESS.to_be_bytes()[..]).await;		// Address
-	self.write_cmd_bytes(&[0x01]).await;				// Package identifier
+	self.write_cmd_bytes(&[PacketCode::CommandPacket as u8]).await;	// Package identifier
 	let mut len = self.buffer.len().try_into().unwrap();
 	self.write_cmd_bytes(&[len]).await;				// Package Length
 	self.write_cmd_bytes(&[command as u8]).await;			// Instruction Code
 	if(data != 0) {
+	    // The documentation (see below) say this about the data:
+	    //   Data packet shall not appear alone in executing
+	    //   processs, must follow command packet or acknowledge packet.
+	    //   PID=0x02H (`PacketCode::DataPacket`).
+	    // Q: What does that actually mean, does it mean we first need
+	    //    to send the command as one write, then the data separately?
 	    self.write_cmd_bytes(&data.to_be_bytes()[..]).await;	// Data
 	}
 	let chk = self.compute_checksum().await;
@@ -422,8 +420,8 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn SetSysPara(&mut self, param: u8, content: u8) -> Status {
-	// TODO: Merge `param` and `content`.
-	return self.send_command(Command::SetSysPara, param as u32).await;
+	let data = u32::from_be_bytes([param, content, 0, 0]);
+	return self.send_command(Command::SetSysPara, data).await;
     }
 
     // Description:
@@ -543,7 +541,8 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     // TODO: Return `Status` and ... (32 bytes - `[u8, 32]`)??
     pub async fn ReadIndexTable(&mut self, page: u8) -> Status {
-	return self.send_command(Command::ReadIndexTable, page as u32).await;
+	let data = u32::from_be_bytes([page, 0, 0, 0]);
+	return self.send_command(Command::ReadIndexTable, data).await;
     }
 
     // ===== Fingerprint-processing instructions
@@ -657,7 +656,8 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn Img2Tz(&mut self, buff: u8) -> Status {
-	return self.send_command(Command::Img2Tz, buff as u32).await;
+	let data = u32::from_be_bytes([buff, 0, 0, 0]);
+	return self.send_command(Command::Img2Tz, data).await;
     }
 
     // Description: Combine information of character files from CharBuffer1 and CharBuffer2 and generate
@@ -713,7 +713,8 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn UpChar(&mut self, buff: u8) -> Status {
-	return self.send_command(Command::UpChar, buff as u32).await;
+	let data = u32::from_be_bytes([buff, 0, 0, 0]);
+	return self.send_command(Command::UpChar, data).await;
     }
 
     // Description: Upper computer download template to module buffer.
@@ -740,7 +741,8 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn DownChar(&mut self, buff: u8) -> Status {
-	return self.send_command(Command::DownChar, buff as u32).await;
+	let data = u32::from_be_bytes([buff, 0, 0, 0]);
+	return self.send_command(Command::DownChar, data).await;
     }
 
     // Description: Store the template of specified buffer (Buffer1/Buffer2) at the designated location
@@ -774,7 +776,8 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn Store(&mut self, buff: u8, page: u16) -> Status {
-	// TODO: Merge `buff` and `page`.
+	// TODO: Split page into two, to fit two u8's.
+	//let data = u32::from_be_bytes([buff, page, 0]);
 	return self.send_command(Command::Store, buff as u32).await;
     }
 
@@ -807,7 +810,8 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn LoadChar(&mut self, buff: u8, page: u16) -> Status {
-	// TODO: Merge `buff` and `page`.
+	// TODO: Split page into two, to fit two u8's.
+	//let data = u32::from_be_bytes([buff, page, 0]);
 	return self.send_command(Command::LoadChar, buff as u32).await;
     }
 
@@ -839,7 +843,8 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn DeletChar(&mut self, page: u16, n: u16) -> Status {
-	// TODO: Merge `buff` and `page`.
+	// TODO: Split page and n into two u8's each.
+	//let data = u32::from_be_bytes([page, n]);
 	return self.send_command(Command::DeletChar, page as u32).await;
     }
 
@@ -933,7 +938,9 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     // TODO: Return `Status`, PageID (2 bytes - `[u8, 2]`) and MatchScore (2 bytes - `[u8, 2]`)??
     pub async fn Search(&mut self, buff: u8, start: u16, page: u16) -> Status {
-	// TODO: Merge `buff`, `start` and `page`.
+	// TODO: Split start and page into two u8's each.
+	// NOTE: That leaves `buff`, which is another u8!
+	//let data = u32::from_be_bytes([page, n]);
 	return self.send_command(Command::Search, buff as u32).await;
     }
 
@@ -1285,7 +1292,9 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn WriteNotepad(&mut self, page: u8, content: &[u128; 2]) -> Status { // u128 => 16 bytes
-	// TODO: Merge `page` and `content`.
+	// TODO: Split content into multiple u8's.
+	// NOTE: That leaves `page` and a lot more of `content` that won't fit in a u32!
+	//let data = u32::from_be_bytes([page, n]);
 	return self.send_command(Command::WriteNotepad, page as u32).await;
     }
 
