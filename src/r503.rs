@@ -52,6 +52,7 @@ pub enum Status {
     ErrorIncorrectConfigRegister	= 0x1b,
     ErrorWrongNotepadNumber		= 0x1c,
     ErrorFailedOperateCommunicationPort	= 0x1d,
+    ErrorSensorAbnormal			= 0x29,
     ErrorBadPackage			= 0xff
 }
 
@@ -203,23 +204,23 @@ impl<'l> R503<'l> {
     // SUM	2 bytes		The arithmetic sum of package identifier, package length and all package
     //				contens. Overflowing bits are omitted. high byte is transferred first.
 
-    async fn write(&mut self) -> Status {
+    async fn write(&mut self) -> u8 {
 	info!("write='{:?}'", self.buffer[..]);
 	self.debug_vec(true).await;
 
 	match self.tx.write(&self.buffer).await {
 	    Ok(..) => {
 		info!("Write successful.");
-		return Status::CmdExecComplete;
+		return Status::CmdExecComplete as u8;
 	    }
 	    Err(e) => {
 		error!("Write error: {:?}", e);
-		return Status::ErrorReceivePackage;
+		return Status::ErrorReceivePackage as u8;
 	    }
 	}
     }
 
-    async fn read(&mut self) -> Status {
+    async fn read(&mut self) -> u8 {
 	let mut buf: [u8; 1] = [0; 1]; // Can only read one byte at a time!
 	let mut data: Vec<u8, 128> = heapless::Vec::new(); // Return buffer.
 	let mut cnt: u8 = 0; // Keep track of how many packages we've received.
@@ -230,13 +231,10 @@ impl<'l> R503<'l> {
 	    match self.rx.read(&mut buf).await {
 		Ok(..) => {
 		    // Extract and save read byte.
-		    match cnt {
-			_ => {
-			    debug!("  x({:03})='{=u8:#04x}H' ({:03}D)", cnt, buf[0], buf[0]);
-			    data.push(buf[0]).unwrap();
-			}
-		    }
+		    debug!("  x({:03})='{=u8:#04x}H' ({:03}D)", cnt, buf[0], buf[0]);
+		    data.push(buf[0]).unwrap();
 
+		    // TODO: `11` for AuraLedConfig().
 		    if cnt >= 11 {
 			// We've read the whole reply.
 			// TODO: No we haven't! Some commands return more than 11 bytes!
@@ -247,7 +245,7 @@ impl<'l> R503<'l> {
 		}
 		Err(e) => {
 		    error!("Read error: {:?}", e);
-		    return Status::ErrorReceivePackage;
+		    return Status::ErrorReceivePackage as u8;
 		}
 	    }
 
@@ -262,7 +260,7 @@ impl<'l> R503<'l> {
 	let start = u16::from_be_bytes([data[0], data[1]]);
 	if(start != START) {
 	    error!("Bad package (start)");
-	    return Status::ErrorBadPackage;
+	    return Status::ErrorBadPackage as u8;
 	} else {
 	    debug!("  Package start is ok.");
 	}
@@ -270,7 +268,7 @@ impl<'l> R503<'l> {
 	let address = u32::from_be_bytes([data[2], data[3], data[4], data[5]]);
 	if(address != ADDRESS) {
 	    error!("Bad package (address)");
-	    return Status::ErrorBadPackage;
+	    return Status::ErrorBadPackage as u8;
 	} else {
 	    debug!("  Package address is ok.");
 	}
@@ -278,7 +276,7 @@ impl<'l> R503<'l> {
 	let pid = u8::from_be_bytes([data[6]]);
 	if(pid != 0x07) {
 	    error!("Bad package (pid)");
-	    return Status::ErrorBadPackage;
+	    return Status::ErrorBadPackage as u8;
 	} else {
 	    debug!("  Package pid is ok.");
 	}
@@ -286,15 +284,21 @@ impl<'l> R503<'l> {
 	// TODO: Depends on DATA returned:
 	//   4) Byte  8- 9 should contain the LENGTH		- `0x0003`.
 	//   5) Byte    10 should contain the DATA		- `0x00`.
+	//                 could also be ConfirmationCode	- `0x00`.
 	//   6) Byte 11-12 should contain the SUM		- `0x000a`.
+	if data[9] != 0 {
+	    return data[9];
+	}
 
 	// If we got here, we've succeeded.
-	return Status::CmdExecComplete;
+	return Status::CmdExecComplete as u8;
     }
 
     // -----
 
-    async fn send_command(&mut self, command: Command, data: u32) -> Status {
+    // The `data` parameter needs to be an `i32`, so that we can send it `-1` if
+    // we don't have any data to add. Some commands don't..
+    async fn send_command(&mut self, command: Command, data: i32) -> u8 {
 	info!("Sending command {=u32:#04x}", command as u32);
 
 	// Clear buffer.
@@ -307,13 +311,7 @@ impl<'l> R503<'l> {
 	let mut len = <usize as TryInto<u16>>::try_into(self.buffer.len()).unwrap() as u16;
 	self.write_cmd_bytes(&len.to_be_bytes()[..]).await;		// Package Length
 	self.write_cmd_bytes(&[command as u8]).await;			// Instruction Code
-	if(data != 0) {
-	    // The documentation (see below) say this about the data:
-	    //   Data packet shall not appear alone in executing
-	    //   processs, must follow command packet or acknowledge packet.
-	    //   PID=0x02H (`PacketCode::DataPacket`).
-	    // Q: What does that actually mean, does it mean we first need
-	    //    to send the command as one write, then the data separately?
+	if(data != -1) {
 	    self.write_cmd_bytes(&data.to_be_bytes()[..]).await;	// Data
 	}
 	let chk = self.compute_checksum().await;
@@ -385,13 +383,10 @@ impl<'l> R503<'l> {
     pub async fn VfyPwd(&mut self, pass: u32) -> Status {
 	info!("Checking password: '{:?}'", pass);
 
-	let ret = self.send_command(Command::VfyPwd, pass).await;
-	if(ret as u8 == 0) {
-	    return ret;
-	} else if(ret as u8 == 1) {
-	    return Status::ErrorReceivePackage;
-	} else {
-	    return Status::ErrorPassword;
+	match self.send_command(Command::VfyPwd, pass as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x13 => return Status::ErrorPassword,
+	    _ => return Status::ErrorReceivePackage,
 	}
     }
 
@@ -413,18 +408,17 @@ impl<'l> R503<'l> {
     // Acknowledge Package format:
     //   Header			 2 bytes	0xEF01
     //   Address		 4 bytes	xxxxxx
-    //   ??? Package Identifier	 1 byte		0x07 ???	NO PID ?!??
+    //   Package Identifier	 1 byte		0x07
     //   Package Length		 2 byte		0x03
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn SetPwd(&mut self, pass: u32) -> Status {
 	info!("Setting module password: '{:?}'", pass);
 
-	let ret = self.send_command(Command::SetPwd, pass).await;
-	if(ret as u8 == 0) {
-	    return ret;
-	} else {
-	    return Status::ErrorReceivePackage;
+	match self.send_command(Command::SetPwd, pass as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x01 => return Status::ErrorReceivePackage,
+	    _ => return Status::ErrorPassword,
 	}
     }
 
@@ -453,11 +447,9 @@ impl<'l> R503<'l> {
     pub async fn SetAdder(&mut self, addr: u32) -> Status {
 	info!("Setting module address: '{:?}'", addr);
 
-	let ret = self.send_command(Command::SetAdder, addr).await;
-	if(ret as u8 == 0) {
-	    return ret;
-	} else {
-	    return Status::ErrorReceivePackage;
+	match self.send_command(Command::SetAdder, addr as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
 	}
     }
 
@@ -487,7 +479,11 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn SetSysPara(&mut self, param: u8, content: u8) -> Status {
 	let data = u32::from_be_bytes([param, content, 0, 0]);
-	return self.send_command(Command::SetSysPara, data).await;
+	match self.send_command(Command::SetSysPara, data as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x01 => return Status::ErrorReceivePackage,
+	    _ => return Status::ErrorInvalidRegister,
+	}
     }
 
     // Description:
@@ -518,7 +514,11 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn Control(&mut self, ctrl: u8) -> Status {
-	return self.send_command(Command::Control, ctrl as u32).await;
+	match self.send_command(Command::Control, ctrl as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x1d => return Status::ErrorFailedOperateCommunicationPort,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Read Module’s status register and system basic configuration parameters.
@@ -545,7 +545,10 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     // TODO: Return `Status` and ... (16 bytes - `[u8, 16]`)??
     pub async fn ReadSysPara(&mut self) -> Status {
-	return self.send_command(Command::ReadSysPara, 0 as u32).await;
+	match self.send_command(Command::ReadSysPara, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: read the current valid template number of the Module.
@@ -572,7 +575,10 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     // TODO: Return `Status` and ... (2 bytes - `[u8, 2]`)??
     pub async fn TempleteNum(&mut self) -> Status {
-	return self.send_command(Command::TempleteNum, 0 as u32).await;
+	match self.send_command(Command::TempleteNum, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Read the fingerprint template index table of the module,
@@ -608,7 +614,10 @@ impl<'l> R503<'l> {
     // TODO: Return `Status` and ... (32 bytes - `[u8, 32]`)??
     pub async fn ReadIndexTable(&mut self, page: u8) -> Status {
 	let data = u32::from_be_bytes([page, 0, 0, 0]);
-	return self.send_command(Command::ReadIndexTable, data).await;
+	match self.send_command(Command::ReadIndexTable, data as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // ===== Fingerprint-processing instructions
@@ -638,7 +647,12 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn GenImg(&mut self) -> Status {
-	return self.send_command(Command::GenImg, 0 as u32).await;
+	match self.send_command(Command::GenImg, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x02 => return Status::ErrorNoFingerOnSensor,
+	    0x03 => return Status::ErrorEnroleFinger,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: to upload the image in Img_Buffer to upper computer.
@@ -663,7 +677,11 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn UpImage(&mut self) -> Status {
-	return self.send_command(Command::UpImage, 0 as u32).await;
+	match self.send_command(Command::UpImage, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x0f => return Status::ErrorUploadImage,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Download image from upper computer to Img_Buffer.
@@ -688,7 +706,11 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn DownImage(&mut self) -> Status {
-	return self.send_command(Command::DownImage, 0 as u32).await;
+	match self.send_command(Command::DownImage, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x03 => return Status::ErrorReceiveData,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Generate character file from the original finger image in ImageBuffer and store the
@@ -723,7 +745,12 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn Img2Tz(&mut self, buff: u8) -> Status {
 	let data = u32::from_be_bytes([buff, 0, 0, 0]);
-	return self.send_command(Command::Img2Tz, data).await;
+	match self.send_command(Command::Img2Tz, data as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x06 => return Status::ErrorGenCharFileDistortedImage,
+	    0x07 => return Status::ErrorGenCharFileSmallImage,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Combine information of character files from CharBuffer1 and CharBuffer2 and generate
@@ -750,7 +777,11 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn RegModel(&mut self) -> Status {
-	return self.send_command(Command::RegModel, 0 as u32).await;
+	match self.send_command(Command::RegModel, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x0a => return Status::ErrorCombineCharFiles,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Upload the character file or template of CharBuffer1/CharBuffer2 to upper computer.
@@ -780,7 +811,11 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn UpChar(&mut self, buff: u8) -> Status {
 	let data = u32::from_be_bytes([buff, 0, 0, 0]);
-	return self.send_command(Command::UpChar, data).await;
+	match self.send_command(Command::UpChar, data as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x0d => return Status::ErrorUploadTemplate,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Upper computer download template to module buffer.
@@ -808,7 +843,11 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn DownChar(&mut self, buff: u8) -> Status {
 	let data = u32::from_be_bytes([buff, 0, 0, 0]);
-	return self.send_command(Command::DownChar, data).await;
+	match self.send_command(Command::DownChar, data as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x0e => return Status::ErrorReceiveData,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Store the template of specified buffer (Buffer1/Buffer2) at the designated location
@@ -844,7 +883,12 @@ impl<'l> R503<'l> {
     pub async fn Store(&mut self, buff: u8, page: u16) -> Status {
 	// TODO: Split page into two, to fit two u8's.
 	//let data = u32::from_be_bytes([buff, page, 0]);
-	return self.send_command(Command::Store, buff as u32).await;
+	match self.send_command(Command::Store, buff as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x0b => return Status::ErrorPageIdBeyondLibrary,
+	    0x18 => return Status::ErrorWriteFlash,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Load template at the specified location (PageID) of Flash library to template buffer
@@ -856,7 +900,7 @@ impl<'l> R503<'l> {
     //   Confirmation code=00H: load success;
     //   Confirmation code=01H: error when receiving package;
     //   Confirmation code=0cH: error when reading template from library or the readout template is invalid;
-    //   Confirmation code=0BH: addressing PageID is beyond the finger library;
+    //   Confirmation code=0bH: addressing PageID is beyond the finger library;
     // Instruction code: 07H
     // Command Package format:
     //   Header			 2 bytes	0xEF01
@@ -878,7 +922,12 @@ impl<'l> R503<'l> {
     pub async fn LoadChar(&mut self, buff: u8, page: u16) -> Status {
 	// TODO: Split page into two, to fit two u8's.
 	//let data = u32::from_be_bytes([buff, page, 0]);
-	return self.send_command(Command::LoadChar, buff as u32).await;
+	match self.send_command(Command::LoadChar, buff as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x0c => return Status::ErrorReadingTemplateFromLibrary,
+	    0x0b => return Status::ErrorPageIdBeyondLibrary,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Delete a segment (N) of templates of Flash library started from the specified location
@@ -911,7 +960,11 @@ impl<'l> R503<'l> {
     pub async fn DeletChar(&mut self, page: u16, n: u16) -> Status {
 	// TODO: Split page and n into two u8's each.
 	//let data = u32::from_be_bytes([page, n]);
-	return self.send_command(Command::DeletChar, page as u32).await;
+	match self.send_command(Command::DeletChar, page as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x10 => return Status::ErrorDeleteTemplate,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: to delete all the templates in the Flash library.
@@ -936,7 +989,11 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn Empty(&mut self) -> Status {
-	return self.send_command(Command::Empty, 0 as u32).await;
+	match self.send_command(Command::Empty, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x11 => return Status::ErrorClearLibrary,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Carry out precise matching of templates from CharBuffer1 and CharBuffer2, providing
@@ -964,7 +1021,11 @@ impl<'l> R503<'l> {
     //     Matching Score	 2 byte
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn Match(&mut self) -> Status {
-	return self.send_command(Command::Match, 0 as u32).await;
+	match self.send_command(Command::Match, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x08 => return Status::ErrorNoFingerMatch,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Search the whole finger library for the template that matches the one in CharBuffer1
@@ -1007,7 +1068,11 @@ impl<'l> R503<'l> {
 	// TODO: Split start and page into two u8's each.
 	// NOTE: That leaves `buff`, which is another u8!
 	//let data = u32::from_be_bytes([page, n]);
-	return self.send_command(Command::Search, buff as u32).await;
+	match self.send_command(Command::Search, buff as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x09 => return Status::ErrorNoMatchingFinger,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Detect the finger, record the fingerprint image and store it in ImageBuffer, return
@@ -1043,7 +1108,13 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn GetImageEx(&mut self) -> Status {
-	return self.send_command(Command::GetImageEx, 0 as u32).await;
+	match self.send_command(Command::GetImageEx, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x02 => return Status::ErrorNoFingerOnSensor,
+	    0x03 => return Status::ErrorEnroleFinger,
+	    0x07 => return Status::ErrorGenCharFileSmallImage,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Cancel instruction
@@ -1067,7 +1138,10 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn Cancel(&mut self) -> Status {
-	return self.send_command(Command::Cancel, 0 as u32).await;
+	match self.send_command(Command::Cancel, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Send handshake instructions to the module. If the module works normally, the
@@ -1094,7 +1168,10 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn HandShake(&mut self) -> Status {
-	return self.send_command(Command::HandShake, 0 as u32).await;
+	match self.send_command(Command::HandShake, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Check whether the sensor is normal.
@@ -1118,7 +1195,11 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn CheckSensor(&mut self) -> Status {
-	return self.send_command(Command::CheckSensor, 0 as u32).await;
+	match self.send_command(Command::CheckSensor, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x29 => return Status::ErrorSensorAbnormal,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Get the algorithm library version.
@@ -1147,7 +1228,10 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     // TODO: Return `Status` and AlgVer (32 bytes - `[u8, 32]`)??
     pub async fn GetAlgVer(&mut self) -> Status {
-	return self.send_command(Command::GetAlgVer, 0 as u32).await;
+	match self.send_command(Command::GetAlgVer, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Get the firmware version.
@@ -1176,7 +1260,10 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     // TODO: Return `Status` and FwVer (32 bytes - `[u8, 32]`)??
     pub async fn GetFwVer(&mut self) -> Status {
-	return self.send_command(Command::GetFwVer, 0 as u32).await;
+	match self.send_command(Command::GetFwVer, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Read product information.
@@ -1205,7 +1292,10 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     // TODO: Return `Status` and ProdInfo (46 bytes - `[u8, 46]`)??
     pub async fn ReadProdInfo(&mut self) -> Status {
-	return self.send_command(Command::ReadProdInfo, 0 as u32).await;
+	match self.send_command(Command::ReadProdInfo, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Send soft reset instruction to the module. If the module works normally, return
@@ -1230,7 +1320,10 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn SoftRst(&mut self) -> Status {
-	return self.send_command(Command::SoftRst, 0 as u32).await;
+	match self.send_command(Command::SoftRst, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorSensorAbnormal,
+	}
     }
 
     // Description: Aura LED control
@@ -1279,7 +1372,10 @@ impl<'l> R503<'l> {
 	// Merge the inputs into one u32.
 	let data = u32::from_be_bytes([ctrl as u8, speed, colour as u8, times]);
 
-	return self.send_command(Command::AuraLedConfig, data).await;
+	match self.send_command(Command::AuraLedConfig, data as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // ===== Other instructions
@@ -1307,7 +1403,10 @@ impl<'l> R503<'l> {
     //     Random Number	 4 bytes
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn GetRandomCode(&mut self) -> Status {
-	return self.send_command(Command::GetRandomCode, 0 as u32).await;
+	match self.send_command(Command::GetRandomCode, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: read information page(512bytes)
@@ -1332,7 +1431,11 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn ReadInfPage(&mut self) -> Status {
-	return self.send_command(Command::ReadInfPage, 0 as u32).await;
+	match self.send_command(Command::ReadInfPage, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    0x0f => return Status::ErrorUploadImage,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Upper computer to write data to the specified Flash page. Also see ReadNotepad.
@@ -1364,7 +1467,10 @@ impl<'l> R503<'l> {
 	// TODO: Split content into multiple u8's.
 	// NOTE: That leaves `page` and a lot more of `content` that won't fit in a u32!
 	//let data = u32::from_be_bytes([page, n]);
-	return self.send_command(Command::WriteNotepad, page as u32).await;
+	match self.send_command(Command::WriteNotepad, page as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 
     // Description: Read the specified page’s data content. Also see WriteNotepad.
@@ -1395,6 +1501,9 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     // TODO: Return `Status` and User Content (32 bytes - `[u8, 32]`)??
     pub async fn ReadNotepad(&mut self) -> Status {
-	return self.send_command(Command::ReadNotepad, 0 as u32).await;
+	match self.send_command(Command::ReadNotepad, -1 as i32).await {
+	    0x00 => return Status::CmdExecComplete,
+	    _ => return Status::ErrorReceivePackage,
+	}
     }
 }

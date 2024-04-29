@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use defmt::{debug, info};
+use defmt::{debug, info, error};
 
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::PIO1;
@@ -45,13 +45,17 @@ async fn main(_spawner: Spawner) {
 	Status::CmdExecComplete => {
 	    info!("Fingerprint scanner password set");
 	    ws2812.write(&[(255,0,0).into()]).await; // GREEN
-	},
+	}
 	Status::ErrorReceivePackage => {
-	    info!("ERROR: Fingerprint scanner password set - package receive");
+	    error!("package receive");
 	    ws2812.write(&[(0,255,0).into()]).await; // RED
-	},
+	}
+	Status::ErrorPassword => {
+	    error!("Wrong password");
+	    ws2812.write(&[(255,0,0).into()]).await; // RED
+	}
 	stat => {
-	    info!("ERROR: code='{=u8:#04x}'", stat as u8);
+	    error!("code='{=u8:#04x}'", stat as u8);
 	}
     }
 

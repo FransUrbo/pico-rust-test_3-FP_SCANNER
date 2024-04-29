@@ -3,7 +3,7 @@
 
 // !! Fingerprint scanner is on PIO0, and the NeoPixel is on PIO1 !!
 
-use defmt::{debug, info};
+use defmt::{debug, info, error};
 
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::PIO1;
@@ -47,12 +47,16 @@ async fn main(_spawner: Spawner) {
 	match r503.VfyPwd(0x00000000).await {
 	    Status::CmdExecComplete => {
 		info!("Fingerprint scanner password matches");
-		ws2812.write(&[(255,0,0).into()]).await; // RED
-	    },
+		ws2812.write(&[(0,0,255).into()]).await; // BLUE
+	    }
 	    Status::ErrorReceivePackage => {
-		info!("ERROR: Fingerprint scanner password verify - package receive");
+		error!("Package receive");
 		ws2812.write(&[(0,255,0).into()]).await; // ORANGE
-	    },
+	    }
+	    Status::ErrorPassword => {
+		error!("Wrong password");
+		ws2812.write(&[(255,0,0).into()]).await; // RED
+	    }
 	    stat => {
 		info!("ERROR: code='{=u8:#04x}'", stat as u8);
 	    }
