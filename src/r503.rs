@@ -3,25 +3,25 @@
 
 use defmt::{debug, info};
 
-use embassy_rp::dma::{AnyChannel, Channel};
-use embassy_rp::gpio::Level;
-use embassy_rp::pio::{
-    Config, Direction, FifoJoin, InterruptHandler, Pio, PioPin,
-    ShiftConfig, ShiftDirection, StateMachine
+use embassy_rp::{bind_interrupts, into_ref, Peripheral};
+use embassy_rp::peripherals::{PIO0, UART0, DMA_CH0, DMA_CH1};
+use embassy_rp::uart::{
+    Async, Config, InterruptHandler, Uart, UartTx, UartRx,
+    DataBits, StopBits, TxPin, RxPin
 };
-use embassy_rp::peripherals::PIO0;
-use embassy_rp::{bind_interrupts, into_ref, Peripheral, PeripheralRef};
+use embassy_rp::pio::{PioPin};
 
 use fixed::traits::ToFixed;
 use fixed_macro::types::U56F8;
 use heapless::Vec;
 
 bind_interrupts!(pub struct Irqs {
-    PIO0_IRQ_0 => InterruptHandler<PIO0>;
+    UART0_IRQ  => InterruptHandler<UART0>;
 });
 
 // =====
 
+const PASSWD:  u32 = 0x00000000;
 const ADDRESS: u32 = 0xFFFFFFFF;
 const START:   u16 = 0xEF01;
 
@@ -51,7 +51,8 @@ pub enum Status {
     ErrorInvalidRegister		= 0x1a,
     ErrorIncorrectConfigRegister	= 0x1b,
     ErrorWrongNotepadNumber		= 0x1c,
-    ErrorFailedOperateCommunicationPort	= 0x1d
+    ErrorFailedOperateCommunicationPort	= 0x1d,
+    ErrorOther				= 0xff
 }
 
 // These are in Hex order. Further down, they're defined in the order they
@@ -136,83 +137,36 @@ pub enum AuroraLEDColour {
 // =====
 
 pub struct R503<'l> {
-    dma:	PeripheralRef<'l, AnyChannel>,
-    smO:	StateMachine<'l, PIO0, 0>,	// OUT
-    smI:	StateMachine<'l, PIO0, 1>,	// IN
+    tx:		UartTx<'l, UART0, Async>,
+    rx:		UartRx<'l, UART0, Async>,
     buffer:	Vec<u8, 128>
 }
 
 // NOTE: Pins must be consecutive, otherwise it'll segfault!
 impl<'l> R503<'l> {
     pub fn new(
-	pio:		impl Peripheral<P = PIO0> + 'l,
-	dma:		impl Peripheral<P = impl Channel> + 'l,
-	pin_send:	impl PioPin,
-	pin_receive:	impl PioPin,
-	pin_wakeup:	impl PioPin
+	uart:			impl Peripheral<P = UART0> + 'l,
+	pin_send:		impl TxPin<UART0>,
+	pin_send_dma:		impl Peripheral<P = DMA_CH0> + 'l,
+	pin_receive:		impl RxPin<UART0>,
+	pin_receive_dma:	impl Peripheral<P = DMA_CH1> + 'l,
+	pin_wakeup:		impl TxPin<UART0>
     ) -> Self {
-	into_ref!(dma);
+	into_ref!(pin_send_dma);
 
-	let Pio {
-	    mut common,
-	    mut sm0,
-	    mut sm1,
-	    ..
-	} = Pio::new(pio, Irqs);
+	// Configure the communication protocol etc.
+	let mut config = Config::default();
+	config.baudrate = 57600; //115200;
+	config.stop_bits = StopBits::STOP1;
+	config.data_bits = DataBits::DataBits8;
 
-	// Pin setup.
-	let tx = common.make_pio_pin(pin_send);
-	let rx = common.make_pio_pin(pin_receive);
-	let wu = common.make_pio_pin(pin_wakeup);
-
-	// Setup the OUTPUT StateMachine (sm0).
-	// ========================================
-
-	let mut cfg_out = Config::default();
-//	cfg_out.use_program(&common.load_program(&prg_out.program), &[&pin_send]);
-
-	// FIFO setup.
-	cfg_out.fifo_join = FifoJoin::TxOnly;
-	cfg_out.shift_out = ShiftConfig {
-	    auto_fill: false,
-	    threshold: 24,
-	    direction: ShiftDirection::Left,
-	};
-
-	cfg_out.set_out_pins(&[&tx]);
-	cfg_out.set_set_pins(&[&tx]);
-
-	cfg_out.clock_divider = (U56F8!(125_000_000) / 20 / 200).to_fixed();
-
-	sm0.set_config(&cfg_out);
-	sm0.set_enable(true);
-
-	// Setup the INPUT StateMachine (sm1).
-	// ========================================
-
-	let mut cfg_in = Config::default();
-//	cfg_in.use_program(&common.load_program(&prg_in.program), &[&pin_receive, &pin_wakeup]);
-
-	// FIFO setup.
-	cfg_in.fifo_join = FifoJoin::RxOnly;
-	cfg_in.shift_out = ShiftConfig {
-	    auto_fill: false,
-	    threshold: 24,
-	    direction: ShiftDirection::Right,
-	};
-
-	cfg_in.set_in_pins(&[&rx, &wu]);
-	cfg_in.set_set_pins(&[&rx, &wu]); // => Must be consecutive!
-
-	cfg_in.clock_divider = (U56F8!(125_000_000) / 20 / 200).to_fixed();
-
-	sm0.set_config(&cfg_in);
-	sm0.set_enable(true);
+	// Initialize the fingerprint scanner.
+	let uart = Uart::new(uart, pin_send, pin_receive, Irqs, pin_send_dma, pin_receive_dma, config);
+	let (mut tx, rx) = uart.split();
 
 	Self {
-	    dma:	dma.map_into(),
-	    smO:	sm0,
-	    smI:	sm1,
+	    tx:		tx,
+	    rx:		rx,
 	    buffer:	heapless::Vec::new()
 	}
     }
@@ -245,16 +199,26 @@ impl<'l> R503<'l> {
 	debug!("Writing package: {:?}", self.debug_vec(false).await);
 	self.debug_vec(true).await;
 
-//	for byte in &self.buffer {
-//	    self.sm.tx().wait_push(*byte as u32);
-//	}
+	match self.tx.write(&self.buffer).await {
+	    Ok(..) => info!("Write successful"),
+	    Err(e) => info!("Write error: {:?}", e)
+	}
 	return Status::CmdExecComplete;
     }
 
     async fn read(&mut self) -> Status {
 	debug!("Reading reply");
 
-	// The Python lib uses `self._uart.read(expected)` to do the actual read!
+	let mut buf = [0; 32];
+	debug!("Attempting read..");
+
+//	self.rx.read(&mut buf).await.unwrap();
+	match self.rx.read(&mut buf).await {
+	    Ok(v)  => info!("Read successful: {:?}", v),
+	    Err(e) => info!("Read error: {:?}", e)
+	}
+	info!("RX='{:?}'", buf);
+
 	return Status::CmdExecComplete;
     }
 
@@ -270,8 +234,8 @@ impl<'l> R503<'l> {
 	self.write_cmd_bytes(&START.to_be_bytes()[..]).await;		// Start
 	self.write_cmd_bytes(&ADDRESS.to_be_bytes()[..]).await;		// Address
 	self.write_cmd_bytes(&[PacketCode::CommandPacket as u8]).await;	// Package identifier
-	let mut len = self.buffer.len().try_into().unwrap();
-	self.write_cmd_bytes(&[len]).await;				// Package Length
+	let mut len = <usize as TryInto<u16>>::try_into(self.buffer.len()).unwrap() as u16;
+	self.write_cmd_bytes(&len.to_be_bytes()[..]).await;		// Package Length
 	self.write_cmd_bytes(&[command as u8]).await;			// Instruction Code
 	if(data != 0) {
 	    // The documentation (see below) say this about the data:
@@ -1234,9 +1198,10 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x0003
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    pub async fn AuraLedConfig(&mut self, ctrl: u8, speed: u8, colour: u8, times: u8) -> Status {
+    pub async fn AuraLedConfig(&mut self, ctrl: AuroraLEDControl, speed: u8, colour: AuroraLEDColour, times: u8) -> Status {
 	// Merge the inputs into one u32.
-	let data = u32::from_be_bytes([ctrl, speed, colour, times]);
+	let data = u32::from_be_bytes([ctrl as u8, speed, colour as u8, times]);
+
 	return self.send_command(Command::AuraLedConfig, data).await;
     }
 

@@ -9,7 +9,7 @@ use embassy_executor::Spawner;
 use embassy_rp::peripherals::PIO1;
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::bind_interrupts;
-use embassy_time::{Timer};
+use embassy_time::Timer;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -29,34 +29,38 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Initialize the fingerprint scanner.
-    let mut r503 = R503::new(p.PIO0, p.DMA_CH0, p.PIN_26, p.PIN_27, p.PIN_28);
+    let mut r503 = R503::new(p.UART0, p.PIN_16, p.DMA_CH0, p.PIN_17, p.DMA_CH1, p.PIN_28);
 
     // Initialize the multi-colour LED.
     let Pio { mut common, sm0, .. } = Pio::new(p.PIO1, Irqs);
-    let mut ws2812 = Ws2812::new(&mut common, sm0, p.DMA_CH1, p.PIN_15);
-    let mut data = (0,0,255).into(); // BLUE
+    let mut ws2812 = Ws2812::new(&mut common, sm0, p.DMA_CH3, p.PIN_15);
 
-    loop {
-	debug!("NeoPixel OFF");
-	ws2812.write(&[(0,0,0).into()]).await;
-	Timer::after_secs(1).await;
+    debug!("NeoPixel OFF");
+    ws2812.write(&[(0,0,0).into()]).await;
+    Timer::after_secs(1).await;
 
-	debug!("NeoPixel ON");
-	ws2812.write(&[data]).await;
-	Timer::after_secs(1).await;
+    debug!("NeoPixel ON");
+    ws2812.write(&[(0,0,255).into()]).await; // BLUE
+    Timer::after_secs(1).await;
 
-	match r503.SetAdder(0xFFFFFF01).await {
+    {
+	match r503.SetPwd(0x00000001).await {
 	    Status::CmdExecComplete => {
-		info!("Fingerprint scanner address set");
-		data = (255,0,0).into(); // GREEN
+		info!("Fingerprint scanner password set");
+		ws2812.write(&[(255,0,0).into()]).await; // RED
 	    },
 	    Status::ErrorReceivePackage => {
-		info!("ERROR: Fingerprint scanner address set - package receive");
-		data = (0,255,0).into(); // RED
+		info!("ERROR: Fingerprint scanner password set - package receive");
+		ws2812.write(&[(0,255,0).into()]).await; // ORANGE
 	    },
 	    stat => {
 		info!("ERROR: code='{=u8:#04x}'", stat as u8);
 	    }
 	}
+	Timer::after_secs(1).await;
+
+	debug!("NeoPixel GREEN");
+	ws2812.write(&[(255,0,0).into()]).await; // GREEN
+	Timer::after_secs(1).await;
     }
 }
