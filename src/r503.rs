@@ -1,13 +1,13 @@
 #![allow(non_snake_case)]	// I want to keep with the manufacturers naming scheme.
 #![allow(unused)]		// Not finished yet, so EVERYTHING is unused!! :D
 
-use defmt::{debug, info};
+use defmt::{debug, info, error};
 
 use embassy_rp::{bind_interrupts, into_ref, Peripheral};
 use embassy_rp::peripherals::{PIO0, UART0, DMA_CH0, DMA_CH1};
 use embassy_rp::uart::{
     Async, Config, InterruptHandler, Uart, UartTx, UartRx,
-    DataBits, StopBits, TxPin, RxPin
+    DataBits, Parity, StopBits, TxPin, RxPin
 };
 use embassy_rp::pio::{PioPin};
 
@@ -21,9 +21,9 @@ bind_interrupts!(pub struct Irqs {
 
 // =====
 
-const PASSWD:  u32 = 0x00000000;
-const ADDRESS: u32 = 0xFFFFFFFF;
 const START:   u16 = 0xEF01;
+const ADDRESS: u32 = 0xFFFFFFFF;
+const PASSWD:  u32 = 0x00000000;
 
 #[derive(Copy, Clone)]
 #[repr(u8)]
@@ -52,7 +52,7 @@ pub enum Status {
     ErrorIncorrectConfigRegister	= 0x1b,
     ErrorWrongNotepadNumber		= 0x1c,
     ErrorFailedOperateCommunicationPort	= 0x1d,
-    ErrorOther				= 0xff
+    ErrorBadPackage			= 0xff
 }
 
 // These are in Hex order. Further down, they're defined in the order they
@@ -134,6 +134,15 @@ pub enum AuroraLEDColour {
     Purple		= 0x03
 }
 
+// Highly subjective, but..
+#[derive(Copy, Clone)]
+#[repr(u8)]
+pub enum AuroraLEDSpeed {
+    Slow		= 0xC8,
+    Medium		= 0x20,
+    Fast		= 0x02
+}
+
 // =====
 
 pub struct R503<'l> {
@@ -159,10 +168,11 @@ impl<'l> R503<'l> {
 	config.baudrate = 57600; //115200;
 	config.stop_bits = StopBits::STOP1;
 	config.data_bits = DataBits::DataBits8;
+	config.parity = Parity::ParityNone;
 
 	// Initialize the fingerprint scanner.
 	let uart = Uart::new(uart, pin_send, pin_receive, Irqs, pin_send_dma, pin_receive_dma, config);
-	let (mut tx, rx) = uart.split();
+	let (mut tx, mut rx) = uart.split();
 
 	Self {
 	    tx:		tx,
@@ -193,39 +203,99 @@ impl<'l> R503<'l> {
     // SUM	2 bytes		The arithmetic sum of package identifier, package length and all package
     //				contens. Overflowing bits are omitted. high byte is transferred first.
 
-    // This is where the "magic" happens! NO IDEA HOW TO WRITE OR READ TO/FROM THAT THING!!
-
     async fn write(&mut self) -> Status {
-	debug!("Writing package: {:?}", self.debug_vec(false).await);
+	info!("write='{:?}'", self.buffer[..]);
 	self.debug_vec(true).await;
 
 	match self.tx.write(&self.buffer).await {
-	    Ok(..) => info!("Write successful"),
-	    Err(e) => info!("Write error: {:?}", e)
+	    Ok(..) => {
+		info!("Write successful.");
+		return Status::CmdExecComplete;
+	    }
+	    Err(e) => {
+		error!("Write error: {:?}", e);
+		return Status::ErrorReceivePackage;
+	    }
 	}
-	return Status::CmdExecComplete;
     }
 
     async fn read(&mut self) -> Status {
-	debug!("Reading reply");
+	let mut buf: [u8; 1] = [0; 1]; // Can only read one byte at a time!
+	let mut data: Vec<u8, 128> = heapless::Vec::new(); // Return buffer.
+	let mut cnt: u8 = 0; // Keep track of how many packages we've received.
 
-	let mut buf = [0; 32];
-	debug!("Attempting read..");
+	info!("Reading reply.");
+	loop {
+	    // Read byte.
+	    match self.rx.read(&mut buf).await {
+		Ok(..) => {
+		    // Extract and save read byte.
+		    match cnt {
+			_ => {
+			    debug!("  x({:03})='{=u8:#04x}H' ({:03}D)", cnt, buf[0], buf[0]);
+			    data.push(buf[0]).unwrap();
+			}
+		    }
 
-//	self.rx.read(&mut buf).await.unwrap();
-	match self.rx.read(&mut buf).await {
-	    Ok(v)  => info!("Read successful: {:?}", v),
-	    Err(e) => info!("Read error: {:?}", e)
+		    if cnt >= 11 {
+			// We've read the whole reply.
+			// TODO: No we haven't! Some commands return more than 11 bytes!
+			//       How do we know WHEN we've read the whole thing??
+			info!("read='{:?}'", data[..]);
+			break;
+		    }
+		}
+		Err(e) => {
+		    error!("Read error: {:?}", e);
+		    return Status::ErrorReceivePackage;
+		}
+	    }
+
+	    cnt = cnt + 1;
 	}
-	info!("RX='{:?}'", buf);
 
+	info!("Parsing reply.");
+	// Known values:
+	//   1) Byte  1- 2 should contain the START code	- `0xFE01`.
+	//   2) Byte  3- 6 should contain the ADDRESS		- `0xFFFFFFFF`.
+	//   3) Byte     7 should contain the PID		- `0x07H` ("Acknowledge packet").
+	let start = u16::from_be_bytes([data[0], data[1]]);
+	if(start != START) {
+	    error!("Bad package (start)");
+	    return Status::ErrorBadPackage;
+	} else {
+	    debug!("  Package start is ok.");
+	}
+
+	let address = u32::from_be_bytes([data[2], data[3], data[4], data[5]]);
+	if(address != ADDRESS) {
+	    error!("Bad package (address)");
+	    return Status::ErrorBadPackage;
+	} else {
+	    debug!("  Package address is ok.");
+	}
+
+	let pid = u8::from_be_bytes([data[6]]);
+	if(pid != 0x07) {
+	    error!("Bad package (pid)");
+	    return Status::ErrorBadPackage;
+	} else {
+	    debug!("  Package pid is ok.");
+	}
+
+	// TODO: Depends on DATA returned:
+	//   4) Byte  8- 9 should contain the LENGTH		- `0x0003`.
+	//   5) Byte    10 should contain the DATA		- `0x00`.
+	//   6) Byte 11-12 should contain the SUM		- `0x000a`.
+
+	// If we got here, we've succeeded.
 	return Status::CmdExecComplete;
     }
 
     // -----
 
     async fn send_command(&mut self, command: Command, data: u32) -> Status {
-	debug!("Sending command {=u32:#04x}", command as u32);
+	info!("Sending command {=u32:#04x}", command as u32);
 
 	// Clear buffer.
 	self.buffer.clear();
@@ -250,7 +320,12 @@ impl<'l> R503<'l> {
 	self.write_cmd_bytes(&chk.to_be_bytes()[..]).await;		// Checksum
 
 	// Send package.
-	return self.write().await;
+	self.write().await;
+
+	// =====
+
+	// Read response.
+	return self.read().await;
     }
 
     async fn write_cmd_bytes(&mut self, bytes: &[u8]) {
@@ -308,7 +383,7 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn VfyPwd(&mut self, pass: u32) -> Status {
-	debug!("Checking password: '{:?}'", pass);
+	info!("Checking password: '{:?}'", pass);
 
 	let ret = self.send_command(Command::VfyPwd, pass).await;
 	if(ret as u8 == 0) {
@@ -343,7 +418,7 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn SetPwd(&mut self, pass: u32) -> Status {
-	debug!("Setting module password: '{:?}'", pass);
+	info!("Setting module password: '{:?}'", pass);
 
 	let ret = self.send_command(Command::SetPwd, pass).await;
 	if(ret as u8 == 0) {
@@ -376,7 +451,7 @@ impl<'l> R503<'l> {
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn SetAdder(&mut self, addr: u32) -> Status {
-	debug!("Setting module address: '{:?}'", addr);
+	info!("Setting module address: '{:?}'", addr);
 
 	let ret = self.send_command(Command::SetAdder, addr).await;
 	if(ret as u8 == 0) {
@@ -1198,7 +1273,9 @@ impl<'l> R503<'l> {
     //   Package Length		 2 byte		0x0003
     //   Confirmation code	 1 byte		xx		(see above)
     //   Checksum		 2 bytes	Sum		(see top)
-    pub async fn AuraLedConfig(&mut self, ctrl: AuroraLEDControl, speed: u8, colour: AuroraLEDColour, times: u8) -> Status {
+    pub async fn AuraLedConfig(&mut self, ctrl: AuroraLEDControl, speed: u8, colour: AuroraLEDColour, times: u8)
+			       -> Status
+    {
 	// Merge the inputs into one u32.
 	let data = u32::from_be_bytes([ctrl as u8, speed, colour as u8, times]);
 

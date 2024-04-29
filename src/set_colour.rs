@@ -11,7 +11,7 @@ use embassy_time::Timer;
 
 use {defmt_rtt as _, panic_probe as _};
 
-use r503::r503::{R503, AuroraLEDControl, AuroraLEDColour, Status};
+use r503::r503::{R503, AuroraLEDControl, AuroraLEDColour, AuroraLEDSpeed, Status};
 use r503::ws2812::Ws2812 as Ws2812;
 
 bind_interrupts!(pub struct Irqs {
@@ -42,7 +42,9 @@ async fn main(_spawner: Spawner) {
     Timer::after_secs(1).await;
 
     {
-	match r503.AuraLedConfig(AuroraLEDControl::BreathingLight, 200, AuroraLEDColour::Purple, 0).await {
+	match r503.AuraLedConfig(AuroraLEDControl::BreathingLight, AuroraLEDSpeed::Slow as u8,
+				 AuroraLEDColour::Purple, 0).await
+	{
 	    Status::CmdExecComplete => {
 		info!("Fingerprint scanner LED set to Purple");
 		ws2812.write(&[(255,0,0).into()]).await; // RED
