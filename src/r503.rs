@@ -220,6 +220,7 @@ impl<'l> R503<'l> {
 	}
     }
 
+    // TODO: If we've changed the address, the read will hang.
     async fn read(&mut self) -> u8 {
 	let mut buf: [u8; 1] = [0; 1]; // Can only read one byte at a time!
 	let mut data: Vec<u8, 128> = heapless::Vec::new(); // Return buffer.
@@ -446,7 +447,6 @@ impl<'l> R503<'l> {
     //   Checksum		 2 bytes	Sum		(see top)
     pub async fn SetAdder(&mut self, addr: u32) -> Status {
 	info!("Setting module address: '{:?}'", addr);
-
 	match self.send_command(Command::SetAdder, addr as i32).await {
 	    0x00 => return Status::CmdExecComplete,
 	    _ => return Status::ErrorReceivePackage,
