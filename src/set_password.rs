@@ -27,7 +27,7 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Initialize the fingerprint scanner.
-    let mut r503 = R503::new(p.UART0, p.PIN_16, p.DMA_CH0, p.PIN_17, p.DMA_CH1, p.PIN_28);
+    let mut r503 = R503::new(p.UART0, p.PIN_16, p.DMA_CH0, p.PIN_17, p.DMA_CH1, p.PIN_13.into());
 
     // Initialize the multi-colour LED.
     let Pio { mut common, sm0, .. } = Pio::new(p.PIO1, Irqs);

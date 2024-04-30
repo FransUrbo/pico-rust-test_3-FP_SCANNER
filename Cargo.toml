@@ -53,3 +53,7 @@ path = "src/set_address.rs"
 [[bin]]
 name = "set_colour"
 path = "src/set_colour.rs"
+
+[[bin]]
+name = "set_fingerprint"
+path = "src/set_fingerprint.rs"

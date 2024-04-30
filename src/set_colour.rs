@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use defmt::{debug, info};
+use defmt::{debug, info, error};
 
 use embassy_executor::Spawner;
 use embassy_rp::peripherals::PIO1;
@@ -11,7 +11,7 @@ use embassy_time::Timer;
 
 use {defmt_rtt as _, panic_probe as _};
 
-use r503::r503::{R503, AuroraLEDControl, AuroraLEDColour, AuroraLEDSpeed, Status};
+use r503::r503::R503;
 use r503::ws2812::Ws2812 as Ws2812;
 
 bind_interrupts!(pub struct Irqs {
@@ -27,7 +27,7 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
     // Initialize the fingerprint scanner
-    let mut r503 = R503::new(p.UART0, p.PIN_16, p.DMA_CH0, p.PIN_17, p.DMA_CH1, p.PIN_28);
+    let mut r503 = R503::new(p.UART0, p.PIN_16, p.DMA_CH0, p.PIN_17, p.DMA_CH1, p.PIN_13.into());
 
     // Initialize the multi-colour LED.
     let Pio { mut common, sm0, .. } = Pio::new(p.PIO1, Irqs);
@@ -41,26 +41,14 @@ async fn main(_spawner: Spawner) {
     ws2812.write(&[(0,0,255).into()]).await; // BLUE
     Timer::after_secs(1).await;
 
-    {
-	match r503.AuraLedConfig(AuroraLEDControl::BreathingLight, AuroraLEDSpeed::Slow as u8,
-				 AuroraLEDColour::Purple, 0).await
-	{
-	    Status::CmdExecComplete => {
-		info!("Fingerprint scanner LED set to Purple");
-		ws2812.write(&[(255,0,0).into()]).await; // RED
-	    },
-	    Status::ErrorReceivePackage => {
-		info!("ERROR: Fingerprint scanner LED set - package receive");
-		ws2812.write(&[(0,255,0).into()]).await; // ORANGE
-	    },
-	    stat => {
-		info!("ERROR: code='{=u8:#04x}'", stat as u8);
-	    }
-	}
-	Timer::after_secs(1).await;
-
-	debug!("NeoPixel GREEN");
-	ws2812.write(&[(255,0,0).into()]).await; // GREEN
-	Timer::after_secs(1).await;
+    if r503.Wrapper_AuraSet_BlinkinRedSlow().await {
+	error!("Can't set colour steady red");
+    } else {
+	info!("Set colour");
     }
+    Timer::after_secs(1).await;
+
+    debug!("NeoPixel GREEN");
+    ws2812.write(&[(255,0,0).into()]).await; // GREEN
+    Timer::after_secs(1).await;
 }
