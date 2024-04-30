@@ -2001,6 +2001,7 @@ impl<'l> R503<'l> {
 	    Status::CmdExecComplete => {
 		info!("Successfully got image.");
 
+		self.Wrapper_AuraSet_SteadyBlue().await;
 		info!("Remove the finger from the scanner.");
 		if DISABLE_RW {
 		    Timer::after_millis(250).await; // Give it quarter of a sec for debug output to catch up.
@@ -2146,7 +2147,7 @@ impl<'l> R503<'l> {
 			    Status::CmdExecComplete => {
 				info!("Fingerprint model stored in the flash.");
 
-				self.Wrapper_AuraSet_SteadyBlue().await;
+				self.Wrapper_AuraSet_Off().await;
 				return false;
 			    }
 			    Status::ErrorReceivePackage => {
@@ -2173,6 +2174,68 @@ impl<'l> R503<'l> {
 				self.Wrapper_AuraSet_Off().await;
 				return true;
 			    }
+			}
+		    }
+		}
+	    }
+	}
+    }
+
+    pub async fn Wrapper_Verify_Fingerprint(&mut self) -> bool {
+	// =====
+	// 1) Verify the password.
+	if self.Wrapper_Setup().await {
+	    error!("Can't setup scanner");
+
+	    self.Wrapper_AuraSet_BlinkinRedMedium().await;
+	    return true;
+	} else {
+	    info!("Setup complete.");
+
+	    if self.Wrapper_AuraSet_SteadyBlue().await {
+		error!("Can't set colour steady blue");
+
+		return true;
+	    } else {
+		// =====
+		// 2) Get the fingerprint - #1.
+		self.Wrapper_AuraSet_BlinkinBlueMedium().await;
+
+		if self.Wrapper_Get_Fingerprint(1).await {
+		    error!("Couldn't scan the finger");
+
+		    self.Wrapper_AuraSet_BlinkinRedMedium().await;
+		    return true;
+		} else {
+		    info!("Scanned and saved the finger");
+
+		    // =====
+		    // 3) Search for the fingerprint
+		    info!("Searching for the fingerprint");
+		    match self.Search(1, 0, 0xffff).await {
+			Status::CmdExecComplete => {
+			    info!("Fingerprint fount.");
+
+			    self.Wrapper_AuraSet_Off().await;
+			    return false;
+			}
+			Status::ErrorReceivePackage => {
+			    error!("Package receive");
+
+			    self.Wrapper_AuraSet_BlinkinRedMedium().await;
+			    return true;
+			}
+			Status::ErrorNoMatchingFinger => {
+			    error!("No matching finger");
+
+			    self.Wrapper_AuraSet_BlinkinRedMedium().await;
+			    return true;
+			}
+			stat => {
+			    error!("Unknown return code='{=u8:#04x}'", stat as u8);
+
+			    self.Wrapper_AuraSet_Off().await;
+			    return true;
 			}
 		    }
 		}

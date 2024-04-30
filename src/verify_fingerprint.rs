@@ -13,7 +13,7 @@ use embassy_time::Timer;
 
 use {defmt_rtt as _, panic_probe as _};
 
-use r503::r503::{R503, Status};
+use r503::r503::R503;
 use r503::ws2812::Ws2812 as Ws2812;
 
 bind_interrupts!(pub struct Irqs {
@@ -39,32 +39,20 @@ async fn main(_spawner: Spawner) {
     ws2812.write(&[(0,0,0).into()]).await;
     Timer::after_secs(1).await;
 
-    debug!("NeoPixel ON");
-    ws2812.write(&[(0,0,255).into()]).await; // BLUE
-    Timer::after_secs(1).await;
+    loop {
+	debug!("NeoPixel ON");
+	ws2812.write(&[(130,255,0).into()]).await; // ORANGE
 
-    {
-	match r503.VfyPwd(0x00000000).await {
-	    Status::CmdExecComplete => {
-		info!("Fingerprint scanner password matches");
-		ws2812.write(&[(0,0,255).into()]).await; // BLUE
-	    }
-	    Status::ErrorReceivePackage => {
-		error!("Package receive");
-		ws2812.write(&[(130,255,0).into()]).await; // ORANGE
-	    }
-	    Status::ErrorPassword => {
-		error!("Wrong password");
-		ws2812.write(&[(255,0,0).into()]).await; // RED
-	    }
-	    stat => {
-		info!("ERROR: code='{=u8:#04x}'", stat as u8);
-	    }
+	if r503.Wrapper_Verify_Fingerprint().await {
+	    error!("Can't match fingerprint");
+
+	    debug!("NeoPixel RED");
+	    ws2812.write(&[(0,255,0).into()]).await; // RED
+	} else {
+	    info!("Fingerprint matches");
+	    ws2812.write(&[(255,0,0).into()]).await; // GREEN
 	}
-	Timer::after_secs(1).await;
 
-	debug!("NeoPixel GREEN");
-	ws2812.write(&[(255,0,0).into()]).await; // GREEN
-	Timer::after_secs(1).await;
+	Timer::after_secs(5).await;
     }
 }

@@ -43,6 +43,10 @@ name = "verify_password"
 path = "src/verify_password.rs"
 
 [[bin]]
+name = "verify_fingerprint"
+path = "src/verify_fingerprint.rs"
+
+[[bin]]
 name = "set_password"
 path = "src/set_password.rs"
 
