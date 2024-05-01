@@ -304,57 +304,19 @@ impl<'l> R503<'l> {
 	self.write_cmd_bytes(&self.address.to_be_bytes()[..]).await;	// Address		u32
 	self.write_cmd_bytes(&[PacketCode::CommandPacket as u8]).await;	// Package identifier	u8
 
-	// Not sure why, but this seems to have to be hard-coded!!??
-	let l: usize;
-	match command {
-	    Command::GenImg		|
-	    Command::Match		|
-	    Command::RegModel		|
-	    Command::UpImage		|
-	    Command::DownImage		|
-	    Command::Empty		|
-	    Command::ReadSysPara	|
-	    Command::ReadInfPage	|
-	    Command::TempleteNum	|
-	    Command::GetImageEx		|
-	    Command::Cancel		|
-	    Command::CheckSensor	|
-	    Command::GetAlgVer		|
-	    Command::GetFwVer		|
-	    Command::SoftRst		|
-	    Command::HandShake		|
-	    Command::GetRandomCode	|
-	    Command::ReadProdInfo	=> l = 0x03,
-
-	    Command::Img2Tz		|
-	    Command::UpChar		|
-	    Command::DownChar		|
-	    Command::Control		|
-	    Command::ReadNotepad	|
-	    Command::ReadIndexTable	=> l = 0x04,
-
-	    Command::Store		|
-	    Command::LoadChar		=> l = 0x06,
-
-	    Command::DeletChar		|
-	    Command::SetSysPara		|
-	    Command::SetPwd		|
-	    Command::VfyPwd		|
-	    Command::SetAdder		|
-	    Command::AuraLedConfig	=> l = 0x07,
-
-	    Command::Search		=> l = 0x08,
-
-	    Command::WriteNotepad	=> l = 0x36
-	}
-	let len = <usize as TryInto<u16>>::try_into(l).unwrap() as u16;
-	debug!("  send_command({}): len(hard-coded)={}; len(real)={}", command as u8, len, data.len());
+	// Add the length of the package content (command packets and data packets). See below.
+	// Length is calculated on 'the Package Identifier (1 byte) + data (??) + checksum (2 bytes)'.
+	let len: u16 = (1 + data.len() + 2).try_into().unwrap();
 	self.write_cmd_bytes(&len.to_be_bytes()[..]).await;		// Package Length	u16
 
+	// Add the instruction code (command).
 	self.write_cmd_bytes(&[command as u8]).await;			// Instruction Code	u8
 
+	// Add the data, if any.
 	self.write_cmd_bytes(&data).await;
 
+	// Calculate and add checksum.
+	// Checksum is calculated on 'length (2 bytes) + data (??)'.
 	let chk = self.compute_checksum().await;
 	self.write_cmd_bytes(&chk.to_be_bytes()[..]).await;		// Checksum
 
@@ -363,7 +325,8 @@ impl<'l> R503<'l> {
 
 	// =====
 
-	// Come commands take longer to start responding..
+	// Come commands take longer to start responding. So give them a bit more time.
+	// NOTE: Need to update this as I start testing more commands.
 	let timeout: u64;
 	match command {
 	    Command::GenImg	=> timeout =  300,
@@ -376,7 +339,7 @@ impl<'l> R503<'l> {
 	    return Status::ErrorReceivePackage;
 	};
 
-	// Parse result.
+	// Parse result and return the Status.
 	return self.parse_result().await;
     }
 
