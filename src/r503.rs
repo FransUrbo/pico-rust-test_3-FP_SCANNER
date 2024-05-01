@@ -155,7 +155,7 @@ pub enum AuroraLEDSpeed {
 pub struct R503<'l> {
     tx:			UartTx<'l, UART0, Async>,
     rx:			UartRx<'l, UART0, Async>,
-    wakeup:		Input<'l, AnyPin>,
+    wakeup:		Input<'l>,
 
     pub address:	u32,
     pub password:	u32,
