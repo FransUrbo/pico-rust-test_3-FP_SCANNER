@@ -12,6 +12,7 @@ use embassy_rp::uart::{
 use embassy_time::{with_timeout, Duration, Timer};
 
 use heapless::Vec;
+use core::mem::transmute;
 
 bind_interrupts!(pub struct Irqs {
     UART0_IRQ  => InterruptHandler<UART0>;
@@ -20,7 +21,6 @@ bind_interrupts!(pub struct Irqs {
 // =====
 
 const START:		u16  = 0xEF01;
-const ADDRESS:		u32  = 0xFFFFFFFF;
 const STORE:		u16  = 0x0001;	// 1-127 (high byte front and low byte behind)
 const DISABLE_RW:	bool = false;	// Disable the read and write functions.
 
@@ -53,6 +53,13 @@ pub enum Status {
     ErrorFailedOperateCommunicationPort	= 0x1d,
     ErrorSensorAbnormal			= 0x29,
     ErrorBadPackage			= 0xff
+}
+
+// https://www.reddit.com/r/rust/comments/36pgn9/integer_to_enum_after_removal_of_fromprimitive/
+impl From<u8> for Status {
+    fn from(t:u8) -> Status {
+	unsafe { transmute(t) }
+    }
 }
 
 // These are in Hex order. Further down, they're defined in the order they
@@ -146,10 +153,14 @@ pub enum AuroraLEDSpeed {
 // =====
 
 pub struct R503<'l> {
-    tx:		UartTx<'l, UART0, Async>,
-    rx:		UartRx<'l, UART0, Async>,
-    wakeup:	Input<'l, AnyPin>,
-    buffer:	Vec<u8, 128>
+    tx:			UartTx<'l, UART0, Async>,
+    rx:			UartRx<'l, UART0, Async>,
+    wakeup:		Input<'l, AnyPin>,
+
+    pub address:	u32,
+    pub password:	u32,
+    buffer:		Vec<u8, 128>,
+    received:		Vec<u8, 128>,
 }
 
 // NOTE: Pins must be consecutive, otherwise it'll segfault!
@@ -163,6 +174,9 @@ impl<'l> R503<'l> {
 	pin_wakeup:		AnyPin
     ) -> Self {
 	into_ref!(pin_send_dma);
+
+	let address  = 0xFFFFFFFF;
+	let password = 0x00000000;
 
 	// Configure the communication protocol etc.
 	let mut config = Config::default();
@@ -186,7 +200,10 @@ impl<'l> R503<'l> {
 	    tx:		tx,
 	    rx:		rx,
 	    wakeup:	wakeup,
-	    buffer:	heapless::Vec::new()
+	    address:	address,
+	    password:	password,
+	    buffer:	heapless::Vec::new(),
+	    received:	heapless::Vec::new(),
 	}
     }
 
@@ -233,24 +250,24 @@ impl<'l> R503<'l> {
 	}
     }
 
-    // TODO: If we've changed the address, the read will hang.
-    async fn read(&mut self) -> u8 {
+    async fn read(&mut self, timeout: u64) -> Vec<u8, 128> {
 	info!("Reading reply.");
+
+	let mut buf: [u8; 1] = [0; 1]; // Can only read one byte at a time!
+	let mut data: Vec<u8, 128> = heapless::Vec::new(); // Return buffer.
+	let mut cnt: u8 = 0; // Keep track of how many packages we've received.
 
 	if DISABLE_RW {
 	    // Just for debugging purposes.
 	    Timer::after_millis(250).await; // Give it quarter of a sec for debug output to catch up.
 	    debug!("  Read disabled by `DISABLE_RW`.");
 
-	    return Status::CmdExecComplete as u8; // Fake a success.
+	    return data; // Fake a success.
 	}
 
-	let mut buf: [u8; 1] = [0; 1]; // Can only read one byte at a time!
-	let mut data: Vec<u8, 128> = heapless::Vec::new(); // Return buffer.
-	let mut cnt: u8 = 0; // Keep track of how many packages we've received.
 	loop {
 	    // Read byte.
-	    match with_timeout(Duration::from_millis(1000), self.rx.read(&mut buf)).await {
+	    match with_timeout(Duration::from_millis(timeout), self.rx.read(&mut buf)).await {
 		Ok(..) => {
 		    // Extract and save read byte.
 		    debug!("  r({:03})='{=u8:#04x}H' ({:03}D)", cnt, buf[0], buf[0]);
@@ -265,54 +282,18 @@ impl<'l> R503<'l> {
 
 	if data.len() < 1 {
 	    error!("Empty response - no data");
-	    return Status::ErrorBadPackage as u8;
+	    return data; // Fake a success.
 	}
 
-	info!("Parsing reply.");
-	// Known values:
-	//   1) Byte  1- 2 should contain the START code	- `0xFE01`.
-	//   2) Byte  3- 6 should contain the ADDRESS		- `0xFFFFFFFF`.
-	//   3) Byte     7 should contain the PID		- `0x07H` ("Acknowledge packet").
-	let start = u16::from_be_bytes([data[0], data[1]]);
-	if start != START {
-	    error!("Bad package (start)");
-	    return Status::ErrorBadPackage as u8;
-	} else {
-	    debug!("  Package start is ok.");
-	}
+	// Save the response.
+	self.received = data.clone();
 
-	let address = u32::from_be_bytes([data[2], data[3], data[4], data[5]]);
-	if address != ADDRESS {
-	    error!("Bad package (address)");
-	    return Status::ErrorBadPackage as u8;
-	} else {
-	    debug!("  Package address is ok.");
-	}
-
-	let pid = u8::from_be_bytes([data[6]]);
-	if pid != 0x07 {
-	    error!("Bad package (pid)");
-	    return Status::ErrorBadPackage as u8;
-	} else {
-	    debug!("  Package pid is ok.");
-	}
-
-	// TODO: Depends on DATA returned:
-	//   4) Byte  8- 9 should contain the LENGTH		- `0x0003`.
-	//   5) Byte    10 should contain the DATA		- `0x00`.
-	//                 could also be ConfirmationCode	- `0x00`.
-	//   6) Byte 11-12 should contain the SUM		- `0x000a`.
-	if data[9] != 0 {
-	    return data[9];
-	}
-
-	// If we got here, we've succeeded.
-	return Status::CmdExecComplete as u8;
+	return data;
     }
 
     // -----
 
-    async fn send_command(&mut self, command: Command, data: Vec<u8, 128>) -> u8 {
+    async fn send_command(&mut self, command: Command, data: Vec<u8, 128>) -> Status {
 	info!("Sending command {=u8:#04x}H ({:?})", command as u8, self.debug_vec(&data, false).await);
 
 	// Clear buffer.
@@ -320,7 +301,7 @@ impl<'l> R503<'l> {
 
 	// Setup data package.
 	self.write_cmd_bytes(&START.to_be_bytes()[..]).await;		// Start		u16
-	self.write_cmd_bytes(&ADDRESS.to_be_bytes()[..]).await;		// Address		u32
+	self.write_cmd_bytes(&self.address.to_be_bytes()[..]).await;	// Address		u32
 	self.write_cmd_bytes(&[PacketCode::CommandPacket as u8]).await;	// Package identifier	u8
 
 	// Not sure why, but this seems to have to be hard-coded!!??
@@ -367,6 +348,7 @@ impl<'l> R503<'l> {
 	    Command::WriteNotepad	=> l = 0x36
 	}
 	let len = <usize as TryInto<u16>>::try_into(l).unwrap() as u16;
+	debug!("  send_command({}): len(hard-coded)={}; len(real)={}", command as u8, len, data.len());
 	self.write_cmd_bytes(&len.to_be_bytes()[..]).await;		// Package Length	u16
 
 	self.write_cmd_bytes(&[command as u8]).await;			// Instruction Code	u8
@@ -381,8 +363,21 @@ impl<'l> R503<'l> {
 
 	// =====
 
-	// Read response.
-	return self.read().await;
+	// Come commands take longer to start responding..
+	let timeout: u64;
+	match command {
+	    Command::GenImg	=> timeout =  300,
+	    Command::Img2Tz	=> timeout = 1000,
+	    _			=> timeout =  200
+	}
+
+	// Read response. Will save in `self.received`.
+	if self.read(timeout).await.is_empty() {
+	    return Status::ErrorReceivePackage;
+	};
+
+	// Parse result.
+	return self.parse_result().await;
     }
 
     async fn write_cmd_bytes(&mut self, bytes: &[u8]) {
@@ -397,6 +392,63 @@ impl<'l> R503<'l> {
 	    checksum += (*byte) as u16;
 	}
 	return checksum;
+    }
+
+    async fn parse_result(&mut self) -> Status {
+	info!("Parsing reply.");
+
+	if self.received.is_empty() {
+	    return Status::ErrorReceivePackage;
+	}
+
+	// Known values:
+	//   1) Byte  1- 2 should contain the START code	- `0xFE01`.
+	//   2) Byte  3- 6 should contain the ADDRESS		- `0xFFFFFFFF`.
+	//   3) Byte     7 should contain the PID		- `0x07H` ("Acknowledge packet").
+	let start = u16::from_be_bytes([self.received[0], self.received[1]]);
+	if start != START {
+	    error!("Bad package (start)");
+	    return Status::ErrorReceivePackage;
+	} else {
+	    debug!("  Package start is ok.");
+	}
+
+	let address = u32::from_be_bytes([self.received[2], self.received[3], self.received[4], self.received[5]]);
+	if self.buffer[9] == Command::SetAdder as u8 &&
+	    self.received[6] == 0x07 &&
+	    self.received[9] == 0x00 &&
+	    address != self.address
+	{
+	    // Change of address was requested
+	    // AND the scanner reported all ok
+	    // AND the address returned does not match the one we used initially.
+	    // => Change the global address.
+	    self.address = address;
+	    info!("Address updated");
+	} else {
+	    if address != self.address {
+		error!("Bad package (address)");
+		return Status::ErrorReceivePackage;
+	    } else {
+		debug!("  Package address is ok.");
+	    }
+	}
+
+	let pid = u8::from_be_bytes([self.received[6]]);
+	if pid != 0x07 {
+	    error!("Bad package (pid)");
+	    return Status::ErrorReceivePackage;
+	} else {
+	    debug!("  Package pid is ok.");
+	}
+
+	// TODO: Depends on DATA returned:
+	//   4) Byte  8- 9 should contain the LENGTH		- `0x0003`.
+	//   5) Byte    10 should contain the DATA		- `0x00`.
+	//                 could also be ConfirmationCode	- `0x00`.
+	//   6) Byte 11-12 should contain the SUM		- `0x000a`.
+
+	return self.received[9].into();
     }
 
     async fn debug_vec(&self, buf: &Vec<u8, 128>, out: bool) -> [u8; 128] {
@@ -446,11 +498,7 @@ impl<'l> R503<'l> {
 	let split: [u8; 4] = pass.to_be_bytes();
 	data.extend(split.iter().map(|&i| i));
 
-	match self.send_command(Command::VfyPwd, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x13 => return Status::ErrorPassword,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::VfyPwd, data).await;
     }
 
     // Description: Set Module’s handshaking password.
@@ -483,9 +531,12 @@ impl<'l> R503<'l> {
 	data.extend(split.iter().map(|&i| i));
 
 	match self.send_command(Command::SetPwd, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x01 => return Status::ErrorReceivePackage,
-	    _ => return Status::ErrorPassword,
+	    Status::CmdExecComplete => {
+		info!("Password changed");
+		self.password = pass;
+		return Status::CmdExecComplete;
+	    }
+	    ret @ _ => return ret
 	}
     }
 
@@ -518,10 +569,7 @@ impl<'l> R503<'l> {
 	let split: [u8; 4] = addr.to_be_bytes();
 	data.extend(split.iter().map(|&i| i));
 
-	match self.send_command(Command::SetAdder, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::SetAdder, data).await;
     }
 
     // Description: Operation parameter settings.
@@ -555,11 +603,7 @@ impl<'l> R503<'l> {
 	let _ = data.push(param);
 	let _ = data.push(content);
 
-	match self.send_command(Command::SetSysPara, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x01 => return Status::ErrorReceivePackage,
-	    _ => return Status::ErrorInvalidRegister,
-	}
+	return self.send_command(Command::SetSysPara, data).await;
     }
 
     // Description:
@@ -595,11 +639,7 @@ impl<'l> R503<'l> {
 	let mut data: Vec<u8, 128> = heapless::Vec::new();
 	let _ = data.push(ctrl);
 
-	match self.send_command(Command::Control, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x1d => return Status::ErrorFailedOperateCommunicationPort,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::Control, data).await;
     }
 
     // Description: Read Module’s status register and system basic configuration parameters.
@@ -630,10 +670,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::ReadSysPara, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::ReadSysPara, data).await;
     }
 
     // Description: read the current valid template number of the Module.
@@ -664,10 +701,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::TempleteNum, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::TempleteNum, data).await;
     }
 
     // Description: Read the fingerprint template index table of the module,
@@ -707,10 +741,7 @@ impl<'l> R503<'l> {
 	let mut data: Vec<u8, 128> = heapless::Vec::new();
 	let _ = data.push(page);
 
-	match self.send_command(Command::ReadIndexTable, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::ReadIndexTable, data).await;
     }
 
     // ===== Fingerprint-processing instructions
@@ -744,12 +775,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::GenImg, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x02 => return Status::ErrorNoFingerOnSensor,
-	    0x03 => return Status::ErrorEnroleFinger,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::GenImg, data).await;
     }
 
     // Description: to upload the image in Img_Buffer to upper computer.
@@ -778,11 +804,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::UpImage, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x0f => return Status::ErrorUploadImage,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::UpImage, data).await;
     }
 
     // Description: Download image from upper computer to Img_Buffer.
@@ -811,11 +833,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::DownImage, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x03 => return Status::ErrorReceiveData,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::DownImage, data).await;
     }
 
     // Description: Generate character file from the original finger image in ImageBuffer and store the
@@ -854,12 +872,7 @@ impl<'l> R503<'l> {
 	let mut data: Vec<u8, 128> = heapless::Vec::new();
 	let _ = data.push(buff);
 
-	match self.send_command(Command::Img2Tz, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x06 => return Status::ErrorGenCharFileDistortedImage,
-	    0x07 => return Status::ErrorGenCharFileSmallImage,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::Img2Tz, data).await;
     }
 
     // Description: Combine information of character files from CharBuffer1 and CharBuffer2 and generate
@@ -890,11 +903,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::RegModel, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x0a => return Status::ErrorCombineCharFiles,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::RegModel, data).await;
     }
 
     // Description: Upload the character file or template of CharBuffer1/CharBuffer2 to upper computer.
@@ -928,11 +937,7 @@ impl<'l> R503<'l> {
 	let mut data: Vec<u8, 128> = heapless::Vec::new();
 	let _ = data.push(buff);
 
-	match self.send_command(Command::UpChar, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x0d => return Status::ErrorUploadTemplate,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::UpChar, data).await;
     }
 
     // Description: Upper computer download template to module buffer.
@@ -964,11 +969,7 @@ impl<'l> R503<'l> {
 	let mut data: Vec<u8, 128> = heapless::Vec::new();
 	let _ = data.push(buff);
 
-	match self.send_command(Command::DownChar, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x0e => return Status::ErrorReceiveData,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::DownChar, data).await;
     }
 
     // Description: Store the template of specified buffer (Buffer1/Buffer2) at the designated location
@@ -1010,12 +1011,7 @@ impl<'l> R503<'l> {
 	let split: [u8; 2] = page.to_be_bytes();
 	let _ = data.extend(split.iter().map(|&i| i));
 
-	match self.send_command(Command::Store, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x0b => return Status::ErrorPageIdBeyondLibrary,
-	    0x18 => return Status::ErrorWriteFlash,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::Store, data).await;
     }
 
     // Description: Load template at the specified location (PageID) of Flash library to template buffer
@@ -1055,12 +1051,7 @@ impl<'l> R503<'l> {
 	let split: [u8; 2] = page.to_be_bytes();
 	let _ = data.extend(split.iter().map(|&i| i));
 
-	match self.send_command(Command::LoadChar, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x0c => return Status::ErrorReadingTemplateFromLibrary,
-	    0x0b => return Status::ErrorPageIdBeyondLibrary,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::LoadChar, data).await;
     }
 
     // Description: Delete a segment (N) of templates of Flash library started from the specified location
@@ -1101,11 +1092,7 @@ impl<'l> R503<'l> {
 	let split_n: [u8; 2] = page.to_be_bytes();
 	data.extend(split_n.iter().map(|&i| i));
 
-	match self.send_command(Command::DeletChar, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x10 => return Status::ErrorDeleteTemplate,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::DeletChar, data).await;
     }
 
     // Description: to delete all the templates in the Flash library.
@@ -1134,11 +1121,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::Empty, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x11 => return Status::ErrorClearLibrary,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::Empty, data).await;
     }
 
     // Description: Carry out precise matching of templates from CharBuffer1 and CharBuffer2, providing
@@ -1170,11 +1153,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::Match, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x08 => return Status::ErrorNoFingerMatch,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::Match, data).await;
     }
 
     // Description: Search the whole finger library for the template that matches the one in CharBuffer1
@@ -1226,11 +1205,7 @@ impl<'l> R503<'l> {
 	let split_page: [u8; 2] = page.to_be_bytes();
 	let _ = data.extend(split_page.iter().map(|&i| i));
 
-	match self.send_command(Command::Search, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x09 => return Status::ErrorNoMatchingFinger,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::Search, data).await;
     }
 
     // Description: Detect the finger, record the fingerprint image and store it in ImageBuffer, return
@@ -1270,13 +1245,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::GetImageEx, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x02 => return Status::ErrorNoFingerOnSensor,
-	    0x03 => return Status::ErrorEnroleFinger,
-	    0x07 => return Status::ErrorGenCharFileSmallImage,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::GetImageEx, data).await;
     }
 
     // Description: Cancel instruction
@@ -1304,10 +1273,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::Cancel, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::Cancel, data).await;
     }
 
     // Description: Send handshake instructions to the module. If the module works normally, the
@@ -1338,10 +1304,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::HandShake, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::HandShake, data).await;
     }
 
     // Description: Check whether the sensor is normal.
@@ -1369,11 +1332,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::CheckSensor, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x29 => return Status::ErrorSensorAbnormal,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::CheckSensor, data).await;
     }
 
     // Description: Get the algorithm library version.
@@ -1406,10 +1365,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::GetAlgVer, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::GetAlgVer, data).await;
     }
 
     // Description: Get the firmware version.
@@ -1442,10 +1398,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::GetFwVer, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::GetFwVer, data).await;
     }
 
     // Description: Read product information.
@@ -1478,10 +1431,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::ReadProdInfo, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::ReadProdInfo, data).await;
     }
 
     // Description: Send soft reset instruction to the module. If the module works normally, return
@@ -1510,10 +1460,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::SoftRst, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorSensorAbnormal,
-	}
+	return self.send_command(Command::SoftRst, data).await;
     }
 
     // Description: Aura LED control
@@ -1568,10 +1515,7 @@ impl<'l> R503<'l> {
 	let _ = data.push(colour as u8);
 	let _ = data.push(times);
 
-	match self.send_command(Command::AuraLedConfig, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::AuraLedConfig, data).await;
     }
 
     // ===== Other instructions
@@ -1603,10 +1547,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::GetRandomCode, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::GetRandomCode, data).await;
     }
 
     // Description: read information page(512bytes)
@@ -1635,11 +1576,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::ReadInfPage, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    0x0f => return Status::ErrorUploadImage,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::ReadInfPage, data).await;
     }
 
     // Description: Upper computer to write data to the specified Flash page. Also see ReadNotepad.
@@ -1674,10 +1611,7 @@ impl<'l> R503<'l> {
 	let _ = data.push(page);
 	let _ = data.extend(content.iter().map(|&i| i));
 
-	match self.send_command(Command::WriteNotepad, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::WriteNotepad, data).await;
     }
 
     // Description: Read the specified page’s data content. Also see WriteNotepad.
@@ -1712,10 +1646,7 @@ impl<'l> R503<'l> {
 
 	let data: Vec<u8, 128> = heapless::Vec::new();
 
-	match self.send_command(Command::ReadNotepad, data).await {
-	    0x00 => return Status::CmdExecComplete,
-	    _ => return Status::ErrorReceivePackage,
-	}
+	return self.send_command(Command::ReadNotepad, data).await;
     }
 
     // ===== Wrapper functions
@@ -1897,7 +1828,7 @@ impl<'l> R503<'l> {
     }
 
     pub async fn Wrapper_Setup(&mut self) -> bool {
-	match self.VfyPwd(0x00000000).await {
+	match self.VfyPwd(self.password).await {
 	    Status::CmdExecComplete => {
 		info!("Fingerprint scanner password matches");
 	    }

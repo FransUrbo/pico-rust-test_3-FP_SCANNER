@@ -56,8 +56,4 @@ async fn main(_spawner: Spawner) {
 	    info!("ERROR: code='{=u8:#04x}'", stat as u8);
 	}
     }
-    Timer::after_secs(1).await;
-
-    debug!("NeoPixel GREEN");
-    ws2812.write(&[(255,0,0).into()]).await; // GREEN
 }

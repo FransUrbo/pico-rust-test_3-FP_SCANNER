@@ -28,6 +28,8 @@ async fn main(_spawner: Spawner) {
 
     // Initialize the fingerprint scanner.
     let mut r503 = R503::new(p.UART0, p.PIN_16, p.DMA_CH0, p.PIN_17, p.DMA_CH1, p.PIN_13.into());
+    r503.password = 0x00000000; // CURRENT password.
+    let new_pw    = 0x00100000;	// NEW password.
 
     // Initialize the multi-colour LED.
     let Pio { mut common, sm0, .. } = Pio::new(p.PIO1, Irqs);
@@ -41,24 +43,41 @@ async fn main(_spawner: Spawner) {
     ws2812.write(&[(0,0,255).into()]).await; // BLUE
     Timer::after_secs(1).await;
 
-    match r503.SetPwd(0x00100000).await {
+    // First verify the old passwor - "login" as it where.
+    match r503.VfyPwd(r503.password).await {
+	Status::CmdExecComplete => {
+	    info!("Fingerprint scanner password matches");
+	    ws2812.write(&[(255,0,0).into()]).await; // GREEN
+	}
+	Status::ErrorReceivePackage => {
+	    error!("Package receive");
+	    ws2812.write(&[(130,255,0).into()]).await; // ORANGE
+	}
+	Status::ErrorPassword => {
+	    error!("Wrong password");
+	    ws2812.write(&[(0,255,0).into()]).await; // RED
+	}
+	stat => {
+	    info!("ERROR: code='{=u8:#04x}'", stat as u8);
+	}
+    }
+
+    // .. then change it
+    match r503.SetPwd(new_pw).await {
 	Status::CmdExecComplete => {
 	    info!("Fingerprint scanner password set");
 	    ws2812.write(&[(255,0,0).into()]).await; // GREEN
 	}
 	Status::ErrorReceivePackage => {
 	    error!("package receive");
-	    ws2812.write(&[(0,255,0).into()]).await; // RED
+	    ws2812.write(&[(130,255,0).into()]).await; // ORANGE
 	}
 	Status::ErrorPassword => {
 	    error!("Wrong password");
-	    ws2812.write(&[(255,0,0).into()]).await; // RED
+	    ws2812.write(&[(0,255,0).into()]).await; // RED
 	}
 	stat => {
 	    error!("code='{=u8:#04x}'", stat as u8);
 	}
     }
-
-    debug!("NeoPixel GREEN");
-    ws2812.write(&[(255,0,0).into()]).await; // GREEN
 }
