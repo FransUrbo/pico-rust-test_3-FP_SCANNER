@@ -5,10 +5,6 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-name = "r503"
-path = "src/lib.rs"
-
 [dependencies]
 defmt = "0.3"
 defmt-rtt = "0.4"
@@ -24,6 +20,14 @@ heapless = "0.8.0"
 cortex-m = { version = "0.7.6", features = ["inline-asm"] }
 cortex-m-rt = "0.7.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+[dependencies.ws2812]
+git = "https://github.com/FransUrbo/rust-libs-ws2812.git"
+rev = "712ed6e"
+
+[dependencies.r503]
+git = "https://github.com/FransUrbo/rust-libs-r503.git"
+rev = "1bbbe8c"
 
 # They haven't released the `embassy_time::with_deadline` yet, so need to use the GIT version.
 [dependencies.embassy-embedded-hal]
